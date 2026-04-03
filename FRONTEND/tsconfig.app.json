@@ -1,4 +1,6 @@
+
 {
+
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
@@ -8,6 +10,7 @@
       "DOM",
       "DOM.Iterable"
     ],
+
     "module": "ESNext",
     "moduleDetection": "force",
     "moduleResolution": "bundler",
