@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@layer base {
+  :root {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 93%;
+
+    --card: 222 44% 9%;
+    --card-foreground: 210 40% 93%;
+
+    --popover: 222 44% 9%;
+    --popover-foreground: 210 40% 93%;
+
+    --primary: 174 72% 56%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 222 30% 14%;
+    --secondary-foreground: 210 40% 85%;
+
+    --muted: 222 30% 14%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 260 60% 65%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 222 30% 18%;
+    --input: 222 30% 18%;
+    --ring: 174 72% 56%;
+
+    --radius: 0.75rem;
+
+    --glow-primary: 174 72% 56%;
+    --glow-accent: 260 60% 65%;
+    --surface-hover: 222 30% 12%;
+
+    --sidebar-background: 222 44% 9%;
+    --sidebar-foreground: 210 40% 85%;
+    --sidebar-primary: 174 72% 56%;
+    --sidebar-primary-foreground: 222 47% 6%;
+    --sidebar-accent: 222 30% 14%;
+    --sidebar-accent-foreground: 210 40% 85%;
+    --sidebar-border: 222 30% 18%;
+    --sidebar-ring: 174 72% 56%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display;
+  }
+
+  code, pre {
+    @apply font-mono;
+  }
+}
+
+@layer utilities {
+  .text-gradient-primary {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent)));
+  }
+
+  .glow-primary {
+    box-shadow: 0 0 40px -10px hsl(var(--primary) / 0.4);
+  }
+
+  .glow-accent {
+    box-shadow: 0 0 40px -10px hsl(var(--accent) / 0.3);
+  }
+
+  .border-glow {
+    border-color: hsl(var(--primary) / 0.3);
+  }
+
+  .surface-glass {
+    @apply bg-card/60 backdrop-blur-xl border border-border;
+  }
+
+  .code-block {
+    @apply bg-card border border-border rounded-lg font-mono text-sm;
+  }
+}
