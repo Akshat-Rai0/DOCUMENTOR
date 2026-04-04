@@ -59,3 +59,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+
+.bun
+.bunlock
+.package-lock.json
