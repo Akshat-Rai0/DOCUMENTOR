@@ -1,8 +1,30 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Link as LinkIcon, FunctionSquare, Wrench, ArrowLeftRight } from "lucide-react";
 
 const Index = () => {
   const navigate = useNavigate();
+  const [url, setUrl] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleIndex = async () => {
+    if (!url) return;
+    setIsLoading(true);
+    try {
+      await fetch("http://localhost:8000/api/crawl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+      });
+      navigate(`/chat?url=${encodeURIComponent(url)}`);
+    } catch (e) {
+      console.error(e);
+      // Proceed to chat anyway to allow testing
+      navigate(`/chat?url=${encodeURIComponent(url)}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#111111] text-[#EEEEEE] font-sans flex flex-col">
@@ -34,19 +56,22 @@ const Index = () => {
           </div>
           <input
             type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
             placeholder="https://pandas.pydata.org/docs/"
             className="w-full bg-[#1A1A1A] border border-[#333333] rounded-2xl py-4 pl-12 pr-32 text-sm text-[#DDDDDD] placeholder:text-[#555555] focus:outline-none focus:border-[#555555] focus:ring-1 focus:ring-[#555555] transition-all"
             onKeyDown={(e) => {
               if (e.key === "Enter") {
-                navigate("/chat");
+                handleIndex();
               }
             }}
           />
           <button 
-            className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#333333] hover:bg-[#444444] text-[#EEEEEE] text-sm font-medium px-6 py-2 rounded-xl transition-colors"
-            onClick={() => navigate("/chat")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#333333] hover:bg-[#444444] text-[#EEEEEE] text-sm font-medium px-6 py-2 rounded-xl transition-colors disabled:opacity-50"
+            onClick={handleIndex}
+            disabled={isLoading || !url}
           >
-            Index docs
+            {isLoading ? "Indexing..." : "Index docs"}
           </button>
         </div>
 
