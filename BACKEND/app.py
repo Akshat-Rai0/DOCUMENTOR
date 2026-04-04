@@ -68,7 +68,7 @@ async def start_crawl(req: CrawlRequest, background_tasks: BackgroundTasks):
 
             # Phase 2 — parse
             crawl_status_dict[job_id]["status"] = "parsing"
-            functions = parse_pages(pages, library=library_name)
+            functions = await parse_pages(pages, library=library_name)
             parsed_store[job_id] = functions
 
             # Phase 3 — process and store (chunk, embed, chroma, bm25)

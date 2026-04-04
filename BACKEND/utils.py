@@ -44,36 +44,35 @@ async def scrape_static(url: str, max_pages: int = 80) -> list[dict]:
 
     await crawl(url)
     return results
-
 async def scrape_cloudflare(url: str) -> list[dict]:
-    """Async crawl via Cloudflare Browser Rendering /crawl endpoint."""
     cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/browser-rendering/crawl"
     headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}", "Content-Type": "application/json"}
     payload = {
         "url": url,
-        "responseFormat": "markdown",
-        "maxDepth": 3,
-        "maxPages": 80,
+        "depth": 3,
+        "limit": 80,
         "allowedDomains": [urlparse(url).netloc],
     }
 
     async with httpx.AsyncClient(timeout=120) as client:
-        # Step 1: start the job
         r = await client.post(cf_url, json=payload, headers=headers)
         r.raise_for_status()
-        job_id = r.json()["id"]
+        job_id = r.json().get("result")  # fixed — was ["id"]
 
-        # Step 2: poll until done
         import asyncio
         for _ in range(30):
             await asyncio.sleep(4)
             status_r = await client.get(f"{cf_url}/{job_id}", headers=headers)
             data = status_r.json()
             result = data.get("result", {})
-            if result.get("status") == "done":
-                return [{"url": p["url"], "markdown": p["content"]} for p in result.get("pages", [])]
-            if result.get("status") == "failed":
-                raise RuntimeError("Cloudflare crawl job failed")
+            if result.get("status") == "completed":  # fixed — was "done"
+                return [
+                    {"url": p["url"], "markdown": p.get("content", "")}
+                    for p in result.get("pages", [])
+                    if p.get("status") != "skipped"
+                ]
+            if result.get("status") in ("errored", "cancelled_due_to_timeout"):
+                raise RuntimeError(f"Cloudflare crawl failed: {result.get('status')}")
 
     raise TimeoutError("Cloudflare crawl timed out")
 
