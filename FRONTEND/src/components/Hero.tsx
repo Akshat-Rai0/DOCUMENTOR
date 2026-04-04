@@ -1,5 +1,6 @@
 import { BookOpen, Github } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Link } from "react-router-dom";
 
 const Hero = () => {
   return (
@@ -19,14 +20,16 @@ const Hero = () => {
         </h1>
 
         <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
-          A 7-stage retrieval pipeline that returns ranked function recommendations, anti-patterns, and verified code snippets — not generic search results.
+          A RAG POWERED documentation experience that delivers precise answers and insights about any functions in the DOCUmentation
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Button size="lg" className="gap-2 glow-primary px-8">
-            <BookOpen className="w-4 h-4" />
-            Explore Architecture
-          </Button>
+          <Link to="/explore">
+            <Button size="lg" className="gap-2 glow-primary px-8">
+              <BookOpen className="w-4 h-4" />
+              Explore DOCUMENTOR
+            </Button>
+          </Link>
           <Button variant="outline" size="lg" className="gap-2 px-8">
             <Github className="w-4 h-4" />
             View Source
