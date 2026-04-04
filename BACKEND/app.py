@@ -41,22 +41,39 @@ async def handle_user_input(user_input: UserInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+from vector_store import check_cache, process_and_store
+
 @app.post("/api/crawl", response_model=CrawlResponse)
 async def start_crawl(req: CrawlRequest, background_tasks: BackgroundTasks):
     """Kick off a doc crawl + parse job. Returns immediately, runs in background."""
     job_id = req.url
+    library_name = req.url.split("//")[-1].split("/")[0]
     crawl_status_dict[job_id] = {"status": "crawling", "pages": 0, "functions": 0}
 
     async def do_crawl():
         try:
+            # Check cache before re-crawling
+            if check_cache(req.url, library_name):
+                crawl_status_dict[job_id] = {
+                    "status": "done",
+                    "pages": 0,
+                    "functions": 0,
+                    "message": "Used cached version (less than 7 days old)"
+                }
+                return
+
             # Phase 1 — crawl
             pages = await crawl_docs(req.url)
             crawl_status_dict[job_id]["pages"] = len(pages)
 
             # Phase 2 — parse
             crawl_status_dict[job_id]["status"] = "parsing"
-            functions = parse_pages(pages)
+            functions = parse_pages(pages, library=library_name)
             parsed_store[job_id] = functions
+
+            # Phase 3 — process and store (chunk, embed, chroma, bm25)
+            crawl_status_dict[job_id]["status"] = "indexing"
+            process_and_store(functions, library=library_name, url=req.url, pages_count=len(pages))
 
             crawl_status_dict[job_id] = {
                 "status": "done",
