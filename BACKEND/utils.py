@@ -11,6 +11,11 @@ def is_js_rendered(url: str) -> bool:
     js_hosts = ["reactjs.org", "vuejs.org", "nextjs.org", "vitejs.dev", "jestjs.io"]
     return any(host in url for host in js_hosts)
 
+def process_input(content: str) -> str:
+    """Process user input."""
+    # Placeholder for actual processing logic
+    return f"Processed: {content}"
+
 async def scrape_static(url: str, max_pages: int = 80) -> list[dict]:
     """Fast scraper for static HTML doc sites (Pandas, FastAPI, SQLAlchemy etc.)"""
     visited, results = set(), []
@@ -64,9 +69,10 @@ async def scrape_cloudflare(url: str) -> list[dict]:
             await asyncio.sleep(4)
             status_r = await client.get(f"{cf_url}/{job_id}", headers=headers)
             data = status_r.json()
-            if data.get("status") == "done":
-                return [{"url": p["url"], "markdown": p["content"]} for p in data.get("pages", [])]
-            if data.get("status") == "failed":
+            result = data.get("result", {})
+            if result.get("status") == "done":
+                return [{"url": p["url"], "markdown": p["content"]} for p in result.get("pages", [])]
+            if result.get("status") == "failed":
                 raise RuntimeError("Cloudflare crawl job failed")
 
     raise TimeoutError("Cloudflare crawl timed out")
