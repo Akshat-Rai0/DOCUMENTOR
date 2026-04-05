@@ -25,6 +25,7 @@
 - [Running the Application](#running-the-application)
 - [API Reference](#api-reference)
 - [How It Works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -105,6 +106,8 @@ Each scraped function is stored as a typed JSON object:
 ---
 
 ## Project Structure
+
+```
 DOCUMENTOR/
 ├── BACKEND/
 │   ├── app.py                  # FastAPI application, route definitions
@@ -120,24 +123,27 @@ DOCUMENTOR/
 │   ├── model.py                # Pydantic request/response models
 │   ├── schemas/
 │   │   └── function.py         # FunctionSchema definition
-│   ├── data/                   # Persisted ChromaDB collections + BM25 indexes
+│   ├── data/                   # Persisted ChromaDB + per-library manifests (gitignored locally)
 │   ├── requirements.txt
 │   ├── .env                    # Environment variables (not committed)
 │   ├── test_crawl.py           # Cloudflare crawl integration test
 │   └── test_parser.py          # Parser validation script
 │
 └── FRONTEND/
-├── src/
-│   ├── pages/
-│   │   ├── Index.tsx        # Landing page with URL input + progress bar
-│   │   └── ChatPage.tsx     # Chat interface with structured answer cards
-│   ├── components/          # Shared UI components (shadcn)
-│   ├── hooks/               # Custom React hooks
-│   └── lib/utils.ts         # Utility functions
-├── .env                     # VITE_API_BASE_URL
-├── package.json
-├── tailwind.config.ts
-└── vite.config.ts
+    ├── src/
+    │   ├── pages/
+    │   │   ├── Index.tsx       # Home: doc URL input, quick-start pills, feature previews
+    │   │   ├── ChatPage.tsx    # Chat UI after indexing
+    │   │   ├── QueryPage.tsx   # Explore / demo route
+    │   │   └── NotFound.tsx
+    │   ├── components/         # Shared UI (shadcn/ui)
+    │   ├── hooks/
+    │   └── lib/
+    ├── .env                    # VITE_API_BASE_URL
+    ├── package.json
+    ├── tailwind.config.ts
+    └── vite.config.ts
+```
 
 ---
 
@@ -197,6 +203,12 @@ CF_ACCOUNT_ID=your_cloudflare_account_id
 CF_API_TOKEN=your_cloudflare_api_token
 ```
 
+Optional — **data directory override** (set in the shell or add to `.env` if your tooling loads it into the environment):
+
+| Variable | Purpose |
+|----------|---------|
+| `DOCUMENTOR_DATA_DIR` | Absolute path to a **writable** folder for `data/` contents. Default: `BACKEND/data`. Use this in Docker, read-only installs, or when the default path is not writable. ChromaDB stores SQLite under `<DOCUMENTOR_DATA_DIR>/chroma`. |
+
 > The Cloudflare credentials are **optional**. The system automatically falls back to the static scraper (`httpx` + `BeautifulSoup`) for most documentation sites. Cloudflare is only used for JS-rendered sites like React, Vue, or Next.js docs.
 
 ### Frontend — `FRONTEND/.env`
@@ -226,7 +238,15 @@ cd FRONTEND
 npm run dev
 ```
 
-The application will be available at **`http://localhost:8080`**.
+The application will be available at **`http://localhost:8080`** (see `FRONTEND/vite.config.ts`).
+
+### Routes (frontend)
+
+| Path | Description |
+|------|-------------|
+| `/` | **Home** — paste a documentation URL or pick a quick-start library (Pandas, FastAPI, Three.js, Scikit-learn, SQLAlchemy). Indexing runs from the URL bar or a pill; progress is shown inline. **What you can ask** cards open a modal with more detail; click outside or press Escape to close. |
+| `/chat?url=...` | **Chat** — opens after a successful index (or when linked with a `url` query). Ask questions against the indexed docs. |
+| `/explore` | **Explore** — additional demo / query page in the app shell. |
 
 ---
 
@@ -334,6 +354,27 @@ The LLM receives only the retrieved documentation chunks — no general knowledg
 > *"Answer ONLY using the provided documentation chunks. If the answer is not in the chunks, say so. Do not use general knowledge."*
 
 The model is instructed to return a fixed JSON schema, ensuring the frontend always receives structured, renderable output.
+
+---
+
+## Troubleshooting
+
+### `Database error: ... unable to open database file` (SQLite code 14)
+
+ChromaDB persists metadata in SQLite under `BACKEND/data/chroma` (or under `DOCUMENTOR_DATA_DIR/chroma` if set). Try:
+
+1. Ensure the backend process can **create and write** to that directory (not a read-only mount).
+2. Set **`DOCUMENTOR_DATA_DIR`** to a folder you own, then restart the API.
+3. Stop the server, delete the **`chroma`** folder inside your data directory (not the whole repo), and re-run indexing so Chroma can recreate a clean database.
+4. Avoid running **multiple API workers** against the same Chroma path; use a single Uvicorn worker for local dev, or give each worker its own data directory.
+
+### Ollama connection errors
+
+Confirm `ollama serve` is running and that `OLLAMA_URL` / `OLLAMA_MODEL` in `BACKEND/.env` match your setup (`ollama list`).
+
+### CORS / API unreachable from the browser
+
+Set `VITE_API_BASE_URL` in `FRONTEND/.env` to the full origin of the FastAPI server (for example `http://localhost:8000`).
 
 ---
 
