@@ -169,11 +169,15 @@ const Index = () => {
     return "error";
   };
 
-  const handleIndex = async (overrideUrl?: string) => {
-    const targetUrl = (overrideUrl ?? url).trim();
+  const handleIndex = async (overrideUrl?: unknown) => {
+    // Pills pass a string; `onClick={handleIndex}` would pass a MouseEvent — ignore non-strings
+    const explicit =
+      typeof overrideUrl === "string" ? overrideUrl.trim() : "";
+    const fromInput = String(url ?? "").trim();
+    const targetUrl = explicit || fromInput;
     if (!targetUrl) return;
-    if (overrideUrl !== undefined) {
-      setUrl(overrideUrl);
+    if (explicit) {
+      setUrl(explicit);
     }
     setIsLoading(true);
     setErrorMessage(null);
@@ -242,8 +246,9 @@ const Index = () => {
             }}
           />
           <button 
+            type="button"
             className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#333333] hover:bg-[#444444] text-[#EEEEEE] text-sm font-medium px-6 py-2 rounded-xl transition-colors disabled:opacity-50"
-            onClick={handleIndex}
+            onClick={() => void handleIndex()}
             disabled={isLoading || !url}
           >
             {isLoading ? "Indexing..." : "Index docs"}
