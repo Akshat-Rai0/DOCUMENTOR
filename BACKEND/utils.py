@@ -16,33 +16,32 @@ def process_input(content: str) -> str:
     # Placeholder for actual processing logic
     return f"Processed: {content}"
 
+
 async def scrape_static(url: str, max_pages: int = 80) -> list[dict]:
-    """Fast scraper for static HTML doc sites (Pandas, FastAPI, SQLAlchemy etc.)"""
     visited, results = set(), []
     base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+    queue = [url]
 
-    async def crawl(page_url: str):
-        if page_url in visited or len(visited) >= max_pages:
-            return
-        visited.add(page_url)
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10) as client:
+        while queue and len(visited) < max_pages:
+            page_url = queue.pop(0)
+            if page_url in visited:
+                continue
+            visited.add(page_url)
+            try:
                 r = await client.get(page_url, follow_redirects=True)
-            soup = BeautifulSoup(r.text, "html.parser")
-            # Remove nav/footer noise
-            for tag in soup(["nav", "footer", "script", "style", "header"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-            results.append({"url": page_url, "markdown": text})
-            # Follow internal links only
-            for a in soup.find_all("a", href=True):
-                href = urljoin(page_url, a["href"]).split("#")[0]
-                if href.startswith(base) and href not in visited:
-                    await crawl(href)
-        except Exception:
-            pass
+                soup = BeautifulSoup(r.text, "html.parser")
+                for tag in soup(["nav", "footer", "script", "style", "header"]):
+                    tag.decompose()
+                text = soup.get_text(separator="\n", strip=True)
+                results.append({"url": page_url, "markdown": text})
+                for a in soup.find_all("a", href=True):
+                    href = urljoin(page_url, a["href"]).split("#")[0]
+                    if href.startswith(base) and href not in visited:
+                        queue.append(href)
+            except Exception:
+                pass
 
-    await crawl(url)
     return results
 async def scrape_cloudflare(url: str) -> list[dict]:
     cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/browser-rendering/crawl"
