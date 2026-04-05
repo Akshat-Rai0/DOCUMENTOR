@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Link as LinkIcon, FunctionSquare, Wrench, ArrowLeftRight, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -25,6 +26,7 @@ const Index = () => {
   const [pagesIndexed, setPagesIndexed] = useState(0);
   const [functionsIndexed, setFunctionsIndexed] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const indexButtonRef = useRef<HTMLButtonElement>(null);
 
   const pollStatusUntilDone = async (targetUrl: string): Promise<CrawlStatus> => {
     for (let attempt = 0; attempt < 180; attempt++) {
@@ -94,10 +96,7 @@ const Index = () => {
         <div className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
           DocuMentor
         </div>
-        <nav className="flex gap-4">
-          <button className="px-4 py-2 text-sm font-medium bg-[#222222] rounded-full hover:bg-[#333333] transition-colors">Home</button>
-          <button className="px-4 py-2 text-sm font-medium text-[#888888] hover:text-[#DDDDDD] transition-colors">History</button>
-          <button className="px-4 py-2 text-sm font-medium text-[#888888] hover:text-[#DDDDDD] transition-colors">Settings</button>
+        <nav className="flex items-center gap-2">
         </nav>
       </header>
 
@@ -128,6 +127,7 @@ const Index = () => {
             }}
           />
           <button 
+            ref={indexButtonRef}
             className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#333333] hover:bg-[#444444] text-[#EEEEEE] text-sm font-medium px-6 py-2 rounded-xl transition-colors disabled:opacity-50"
             onClick={handleIndex}
             disabled={isLoading || !url}
@@ -158,21 +158,30 @@ const Index = () => {
           </div>
         )}
 
-        {/* Try links */}
-        <div className="text-xs text-[#555555] flex flex-wrap justify-center gap-1 mb-8">
-          Try:
-          <button className="text-indigo-400 hover:text-indigo-300 hover:underline">https://docs.python-requests.org</button>
-          <span>or</span>
-          <button className="text-indigo-400 hover:text-indigo-300 hover:underline">https://threejs.org/docs</button>
-        </div>
 
         {/* Pills */}
-        <div className="flex flex-wrap justify-center gap-3 mb-16">
+        <div className="flex flex-wrap justify-center gap-3 mb-8">
           {['Pandas', 'FastAPI', 'Three.js', 'Scikit-learn', 'SQLAlchemy'].map(tag => (
             <button key={tag} className="px-4 py-2 rounded-full border border-[#333333] text-sm text-[#888888] hover:bg-[#222222] hover:text-[#DDDDDD] transition-all">
               {tag}
             </button>
           ))}
+        </div>
+
+        {/* Execute Button */}
+        <div className="flex justify-center mb-16">
+          <button 
+            className="px-8 py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition-colors"
+            onClick={() => {
+              if (url) {
+                setTimeout(() => {
+                  indexButtonRef.current?.click();
+                }, 100);
+              }
+            }}
+          >
+            Execute
+          </button>
         </div>
 
         {/* Feature Cards */}
