@@ -216,6 +216,8 @@ Optional — **data directory override** (set in the shell or add to `.env` if y
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
+**Quick setup:** Copy `BACKEND/.env.example` to `BACKEND/.env` and `FRONTEND/.env.example` to `FRONTEND/.env`, then edit values. The example files list every variable the app recognizes (including optional `DOCUMENTOR_DATA_DIR` and Cloudflare fields).
+
 ---
 
 ## Running the Application
@@ -244,8 +246,8 @@ The application will be available at **`http://localhost:8080`** (see `FRONTEND/
 
 | Path | Description |
 |------|-------------|
-| `/` | **Home** — paste a documentation URL or pick a quick-start library (Pandas, FastAPI, Three.js, Scikit-learn, SQLAlchemy). Indexing runs from the URL bar or a pill; progress is shown inline. **What you can ask** cards open a modal with more detail; click outside or press Escape to close. |
-| `/chat?url=...` | **Chat** — opens after a successful index (or when linked with a `url` query). Ask questions against the indexed docs. |
+| `/` | **Home** — paste a documentation URL or pick a quick-start library (Pandas, FastAPI, Three.js, Scikit-learn, SQLAlchemy). Optional `?prefill=<encoded-doc-url>` fills the input (used by **Switch library** in chat). **What you can ask** cards open a modal; click outside or press Escape to close. |
+| `/chat?url=...&ready=1` | **Chat** — ask questions against indexed docs. The sidebar lists **recent sessions** (from localStorage keys starting with `documentor_history`); click a row to restore that library’s thread. **Switch library** (or the active doc pill) sends you home with the current URL prefilled. |
 | `/explore` | **Explore** — additional demo / query page in the app shell. |
 
 ---
