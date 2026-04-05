@@ -98,7 +98,7 @@ def process_and_store(
     # 3. Store in ChromaDB
     try:
         chroma_client.delete_collection(name=col_name) # Fresh start if recrawling
-    except ValueError:
+    except (ValueError, Exception):
         pass
         
     collection = chroma_client.get_or_create_collection(name=col_name)

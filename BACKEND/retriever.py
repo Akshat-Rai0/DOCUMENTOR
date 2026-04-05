@@ -21,9 +21,15 @@ def _infer_library_from_source_url(source_url: Optional[str]) -> Optional[str]:
         raw = source_url.strip()
         parsed = urlparse(raw if "://" in raw else f"https://{raw}")
         if parsed.netloc:
-            return parsed.netloc
-        return raw.split("/")[0]
+            # Match exactly how app.py extracts library_name:
+            # url.split("//")[-1].split("/")[0]  → "fastapi.tiangolo.com"
+            # then build_collection_name lowercases and replaces - with _
+            # BUT app.py passes the full domain as library_name to process_and_store
+            # So we need the full netloc here too
+            netloc = parsed.netloc  # "fastapi.tiangolo.com"
+            return netloc
 
+    # fallback — find most recently indexed library from manifests
     data_root = Path(DATA_DIR)
     newest_library: Optional[str] = None
     newest_date: Optional[datetime] = None
@@ -171,7 +177,7 @@ def hybrid_retrieve(
         raise ValueError("No indexed library found. Crawl documentation first or pass source_url.")
 
     collection_name = build_collection_name(library)
-
+    print(f"[retriever] library={library!r} collection={collection_name!r}")
     with ThreadPoolExecutor(max_workers=2) as executor:
         semantic_future = executor.submit(_semantic_search, query, collection_name, semantic_top_k)
         bm25_future = executor.submit(_bm25_search, query, collection_name, bm25_top_k)
