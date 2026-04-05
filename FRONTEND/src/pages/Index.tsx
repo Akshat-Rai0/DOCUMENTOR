@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Link as LinkIcon, FunctionSquare, Wrench, ArrowLeftRight, Loader2, X } from "lucide-react";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -117,8 +117,10 @@ function FeaturePreviewCard({ id, onClose }: { id: FeaturePreviewId; onClose: ()
 
 const Index = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [pillLoadingUrl, setPillLoadingUrl] = useState<string | null>(null);
   const [crawlStatus, setCrawlStatus] = useState<CrawlStatus>("idle");
   const [pagesIndexed, setPagesIndexed] = useState(0);
   const [functionsIndexed, setFunctionsIndexed] = useState(0);
@@ -138,6 +140,13 @@ const Index = () => {
       window.removeEventListener("keydown", onKey);
     };
   }, [previewOpen]);
+
+  useEffect(() => {
+    const prefill = searchParams.get("prefill");
+    if (!prefill) return;
+    setUrl(prefill);
+    navigate("/", { replace: true });
+  }, [searchParams, navigate]);
 
   const pollStatusUntilDone = async (targetUrl: string): Promise<CrawlStatus> => {
     for (let attempt = 0; attempt < 180; attempt++) {
@@ -178,6 +187,9 @@ const Index = () => {
     if (!targetUrl) return;
     if (explicit) {
       setUrl(explicit);
+      setPillLoadingUrl(explicit);
+    } else {
+      setPillLoadingUrl(null);
     }
     setIsLoading(true);
     setErrorMessage(null);
@@ -205,6 +217,7 @@ const Index = () => {
       setErrorMessage("Could not reach backend. Check if API is running.");
     } finally {
       setIsLoading(false);
+      setPillLoadingUrl(null);
     }
   };
 
@@ -280,17 +293,23 @@ const Index = () => {
 
         {/* Pills */}
         <div className="flex flex-wrap justify-center gap-3 mb-16">
-          {(Object.keys(LIBRARY_DOC_URLS) as Array<keyof typeof LIBRARY_DOC_URLS>).map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              className="px-4 py-2 rounded-full border border-[#333333] text-sm text-[#888888] hover:bg-[#222222] hover:text-[#DDDDDD] transition-all disabled:opacity-50"
-              disabled={isLoading}
-              onClick={() => handleIndex(LIBRARY_DOC_URLS[tag])}
-            >
-              {tag}
-            </button>
-          ))}
+          {(Object.keys(LIBRARY_DOC_URLS) as Array<keyof typeof LIBRARY_DOC_URLS>).map((tag) => {
+            const docUrl = LIBRARY_DOC_URLS[tag];
+            const pillBusy = pillLoadingUrl === docUrl;
+            return (
+              <button
+                key={tag}
+                type="button"
+                className={`px-4 py-2 rounded-full border border-[#333333] text-sm text-[#888888] hover:bg-[#222222] hover:text-[#DDDDDD] transition-all disabled:opacity-50 ${
+                  pillBusy ? "opacity-50 pointer-events-none" : ""
+                }`}
+                disabled={isLoading}
+                onClick={() => handleIndex(docUrl)}
+              >
+                {tag}
+              </button>
+            );
+          })}
         </div>
 
         {/* Feature Cards */}

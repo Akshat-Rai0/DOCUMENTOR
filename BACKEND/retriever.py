@@ -177,7 +177,6 @@ def hybrid_retrieve(
         raise ValueError("No indexed library found. Crawl documentation first or pass source_url.")
 
     collection_name = build_collection_name(library)
-    print(f"[retriever] library={library!r} collection={collection_name!r}")
     with ThreadPoolExecutor(max_workers=2) as executor:
         semantic_future = executor.submit(_semantic_search, query, collection_name, semantic_top_k)
         bm25_future = executor.submit(_bm25_search, query, collection_name, bm25_top_k)

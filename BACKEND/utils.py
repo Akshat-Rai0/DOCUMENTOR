@@ -11,11 +11,6 @@ def is_js_rendered(url: str) -> bool:
     js_hosts = ["reactjs.org", "vuejs.org", "nextjs.org", "vitejs.dev", "jestjs.io"]
     return any(host in url for host in js_hosts)
 
-def process_input(content: str) -> str:
-    """Process user input."""
-    # Placeholder for actual processing logic
-    return f"Processed: {content}"
-
 
 async def scrape_static(url: str, max_pages: int = 80) -> list[dict]:
     visited, results = set(), []

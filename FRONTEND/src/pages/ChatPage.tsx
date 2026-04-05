@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { Plus, ArrowRight, Search, Loader2, Home } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Plus, ArrowRight, Search, Loader2, Home, Library } from "lucide-react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+/** Primary key used by ChatPage; keys with this prefix are scanned for session list */
+const HISTORY_PREFIX = "documentor_history";
 
 type Intent = "function_search" | "error_fix" | "concept_explain";
 
@@ -48,6 +51,67 @@ const intentBadgeClass: Record<Intent, string> = {
   concept_explain: "text-amber-300 border-amber-500/30 bg-amber-500/10",
 };
 
+function formatLastMessagePreview(messages: Message[]): string {
+  if (!messages.length) return "No messages yet";
+  const last = messages[messages.length - 1];
+  if (last.role === "user") {
+    const t = (last.content || "").trim();
+    if (!t) return "Empty message";
+    return t.length > 90 ? `${t.slice(0, 90)}…` : t;
+  }
+  const text = (last.response?.explanation || last.response?.processed_content || last.content || "").trim();
+  if (!text) return "…";
+  return text.length > 90 ? `${text.slice(0, 90)}…` : text;
+}
+
+function shortUrlLabel(docUrl: string): string {
+  try {
+    const u = new URL(docUrl);
+    const path = u.pathname.length > 1 ? u.pathname.replace(/\/$/, "") : "";
+    const tail = path.length > 24 ? `${path.slice(0, 22)}…` : path;
+    return `${u.hostname}${tail}`;
+  } catch {
+    return docUrl.length > 48 ? `${docUrl.slice(0, 46)}…` : docUrl;
+  }
+}
+
+/** Merge sessions from `documentor_history` (object) and any `documentor_history_<encoded-url>` array keys */
+function collectSessionsFromStorage(): { url: string; messages: Message[] }[] {
+  const byUrl = new Map<string, Message[]>();
+
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(HISTORY_PREFIX)) continue;
+
+    try {
+      if (key === HISTORY_PREFIX) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw) as Record<string, unknown>;
+        if (data && typeof data === "object" && !Array.isArray(data)) {
+          for (const [u, msgs] of Object.entries(data)) {
+            if (Array.isArray(msgs)) byUrl.set(u, msgs as Message[]);
+          }
+        }
+      } else if (key.startsWith(`${HISTORY_PREFIX}_`)) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) continue;
+        const encoded = key.slice(HISTORY_PREFIX.length + 1);
+        const u = decodeURIComponent(encoded);
+        byUrl.set(u, parsed as Message[]);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return [...byUrl.entries()]
+    .map(([url, messages]) => ({ url, messages }))
+    .sort((a, b) => a.url.localeCompare(b.url));
+}
+
 export default function ChatPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -61,7 +125,16 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [pastSessions, setPastSessions] = useState<{ url: string; preview: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const refreshPastSessions = useCallback(() => {
+    const rows = collectSessionsFromStorage().map(({ url, messages: msgs }) => ({
+      url,
+      preview: formatLastMessagePreview(msgs),
+    }));
+    setPastSessions(rows);
+  }, []);
 
   // Load history from localStorage
   useEffect(() => {
@@ -88,13 +161,21 @@ export default function ChatPage() {
   }, [messages, url]);
 
   useEffect(() => {
-    if (!url) return;
-    if (ready) {
-      setStatus("done");
-      return;
-    }
+    refreshPastSessions();
+  }, [url, messages, refreshPastSessions]);
 
-    let intervalId: ReturnType<typeof setInterval>;
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key && e.key.startsWith(HISTORY_PREFIX)) refreshPastSessions();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [refreshPastSessions]);
+
+  useEffect(() => {
+    if (!url) return;
+
+    let intervalId: ReturnType<typeof setInterval> | undefined;
 
     const checkStatus = async () => {
       try {
@@ -106,16 +187,26 @@ export default function ChatPage() {
         if (typeof data.functions === "number") setFunctionsIndexed(data.functions);
 
         if (data.status === "done" || data.status === "error") {
-          clearInterval(intervalId);
+          if (intervalId) clearInterval(intervalId);
         }
       } catch (e) {
         console.error("Failed to fetch crawl status", e);
       }
     };
 
-    checkStatus();
-    intervalId = setInterval(checkStatus, 2000);
-    return () => clearInterval(intervalId);
+    if (ready) {
+      setStatus("done");
+    }
+
+    void checkStatus();
+
+    if (!ready) {
+      intervalId = setInterval(checkStatus, 2000);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
   }, [url, ready]);
 
   useEffect(() => {
@@ -179,6 +270,15 @@ export default function ChatPage() {
   };
 
   const domainName = url ? url.replace(/https?:\/\//, "").split("/")[0] : "No source";
+
+  const goSwitchLibrary = () => {
+    if (!url) return;
+    navigate(`/?prefill=${encodeURIComponent(url)}`);
+  };
+
+  const restoreSession = (sessionUrl: string) => {
+    navigate(`/chat?url=${encodeURIComponent(sessionUrl)}&ready=1`);
+  };
 
   const renderAssistantResponse = (message: Message) => {
     if (!message.response) {
@@ -280,12 +380,49 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <button className="flex items-center gap-2 px-3 py-2 bg-indigo-500/10 text-indigo-400 rounded-lg w-full text-sm font-medium border border-indigo-500/20 mb-6">
-          <div className="w-2 h-2 rounded-full bg-indigo-400" />
+        <button
+          type="button"
+          onClick={goSwitchLibrary}
+          title="Index another library (current URL prefilled on home)"
+          className="flex items-center gap-2 px-3 py-2 bg-indigo-500/10 text-indigo-400 rounded-lg w-full text-sm font-medium border border-indigo-500/20 mb-2 hover:bg-indigo-500/15 transition-colors"
+        >
+          <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />
           <span className="truncate flex-1 text-left">{domainName}</span>
         </button>
+        <button
+          type="button"
+          onClick={goSwitchLibrary}
+          className="flex items-center gap-2 w-full px-2 py-1.5 mb-6 text-xs text-[#888888] hover:text-[#CCCCCC] transition-colors rounded-lg hover:bg-[#1A1A1A]"
+        >
+          <Library className="w-3.5 h-3.5 shrink-0" />
+          Switch library
+        </button>
 
-        <div className="flex-1 overflow-y-auto" />
+        <div className="text-[10px] font-mono uppercase tracking-wider text-[#555555] mb-2 px-1">Recent</div>
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-1 pr-1">
+          {pastSessions.length === 0 ? (
+            <p className="text-xs text-[#666666] px-1 leading-relaxed">Indexed sessions appear here after you chat.</p>
+          ) : (
+            pastSessions.map((s) => {
+              const active = s.url === url;
+              return (
+                <button
+                  key={s.url}
+                  type="button"
+                  onClick={() => restoreSession(s.url)}
+                  className={`w-full text-left rounded-lg px-2 py-2 text-xs border transition-colors ${
+                    active
+                      ? "bg-[#1A1A1A] border-indigo-500/40 text-[#EEEEEE]"
+                      : "border-transparent text-[#AAAAAA] hover:bg-[#1A1A1A] hover:border-[#333333]"
+                  }`}
+                >
+                  <div className="truncate font-medium text-[#DDDDDD] mb-0.5">{shortUrlLabel(s.url)}</div>
+                  <div className="truncate text-[#777777] leading-snug">{s.preview}</div>
+                </button>
+              );
+            })
+          )}
+        </div>
 
         <button 
           onClick={startNewConversation}
