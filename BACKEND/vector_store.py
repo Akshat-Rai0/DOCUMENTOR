@@ -10,14 +10,31 @@ from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from schemas.function import FunctionSchema
 
-# Setup base directory for data storage
+# Setup base directory for data storage (override with DOCUMENTOR_DATA_DIR if the default is not writable)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+_default_data = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.abspath(os.environ.get("DOCUMENTOR_DATA_DIR", _default_data))
+os.makedirs(DATA_DIR, mode=0o755, exist_ok=True)
 
-# Chroma setup
+# Chroma persists SQLite under this path; the directory must exist or SQLite returns "unable to open database file" (code 14)
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
-chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+if os.path.isfile(CHROMA_DIR):
+    raise RuntimeError(
+        f"Chroma path {CHROMA_DIR!r} is a file. Remove it or set DOCUMENTOR_DATA_DIR to a writable folder."
+    )
+os.makedirs(CHROMA_DIR, mode=0o755, exist_ok=True)
+
+try:
+    chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+except Exception as e:
+    hint = (
+        " If the database looks corrupted, stop the server, delete the 'chroma' folder under your data directory, and retry."
+    )
+    raise RuntimeError(
+        f"Could not open ChromaDB at {CHROMA_DIR!r}. "
+        "Ensure the path exists, is a directory, and is writable (or set DOCUMENTOR_DATA_DIR). "
+        f"Original error: {e!s}.{hint}"
+    ) from e
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
