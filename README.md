@@ -385,6 +385,6 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 
 ## Author
 
-Built by **Bipin Kumar Rai** as part of an intermediate-level RAG systems project.
+Built by **AKSHAT RAI** as part of an intermediate-level RAG systems project.
 
 > *"Students waste hours scanning documentation for a function they can't name, to solve a problem they can only describe in plain English."* — This project exists to fix that.
