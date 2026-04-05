@@ -1,26 +1,87 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Link as LinkIcon, FunctionSquare, Wrench, ArrowLeftRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Link as LinkIcon, FunctionSquare, Wrench, ArrowLeftRight, Loader2 } from "lucide-react";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+type CrawlStatus = "idle" | "starting" | "crawling" | "parsing" | "indexing" | "done" | "error";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const statusToProgress = (status: CrawlStatus): number => {
+  if (status === "starting") return 5;
+  if (status === "crawling") return 35;
+  if (status === "parsing") return 65;
+  if (status === "indexing") return 85;
+  if (status === "done") return 100;
+  return 0;
+};
 
 const Index = () => {
   const navigate = useNavigate();
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [crawlStatus, setCrawlStatus] = useState<CrawlStatus>("idle");
+  const [pagesIndexed, setPagesIndexed] = useState(0);
+  const [functionsIndexed, setFunctionsIndexed] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const pollStatusUntilDone = async (targetUrl: string): Promise<CrawlStatus> => {
+    for (let attempt = 0; attempt < 180; attempt++) {
+      const res = await fetch(`${API_BASE_URL}/api/crawl/status?url=${encodeURIComponent(targetUrl)}`);
+      const data = await res.json();
+
+      const status = (data.status || "idle") as CrawlStatus;
+      if (typeof data.pages === "number") setPagesIndexed(data.pages);
+      if (typeof data.functions === "number") setFunctionsIndexed(data.functions);
+
+      if (status === "done") {
+        setCrawlStatus("done");
+        return "done";
+      }
+      if (status === "error") {
+        setCrawlStatus("error");
+        setErrorMessage(data.error || "Indexing failed.");
+        return "error";
+      }
+
+      if (status === "crawling" || status === "parsing" || status === "indexing") {
+        setCrawlStatus(status);
+      }
+
+      await sleep(2000);
+    }
+    setCrawlStatus("error");
+    setErrorMessage("Indexing timed out. Please try again.");
+    return "error";
+  };
 
   const handleIndex = async () => {
     if (!url) return;
     setIsLoading(true);
+    setErrorMessage(null);
+    setPagesIndexed(0);
+    setFunctionsIndexed(0);
+    setCrawlStatus("starting");
     try {
-      await fetch("http://localhost:8000/api/crawl", {
+      const startRes = await fetch(`${API_BASE_URL}/api/crawl`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url })
       });
-      navigate(`/chat?url=${encodeURIComponent(url)}`);
+
+      if (!startRes.ok) {
+        throw new Error("Failed to start crawl.");
+      }
+
+      const finalStatus = await pollStatusUntilDone(url);
+      if (finalStatus === "done") {
+        navigate(`/chat?url=${encodeURIComponent(url)}&ready=1`);
+      }
     } catch (e) {
       console.error(e);
-      // Proceed to chat anyway to allow testing
-      navigate(`/chat?url=${encodeURIComponent(url)}`);
+      setCrawlStatus("error");
+      setErrorMessage("Could not reach backend. Check if API is running.");
     } finally {
       setIsLoading(false);
     }
@@ -75,6 +136,28 @@ const Index = () => {
           </button>
         </div>
 
+        {(isLoading || crawlStatus === "error" || crawlStatus === "done") && (
+          <div className="w-full max-w-3xl mb-8">
+            <div className="w-full h-2 rounded-full bg-[#1E1E1E] overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 ${crawlStatus === "error" ? "bg-red-500" : "bg-indigo-500"}`}
+                style={{ width: `${statusToProgress(crawlStatus)}%` }}
+              />
+            </div>
+            <div className="mt-2 text-xs text-[#888888] flex items-center gap-2">
+              {isLoading && crawlStatus !== "done" && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              <span>
+                {crawlStatus === "starting" && "Starting crawl job..."}
+                {crawlStatus === "crawling" && "Crawling documentation pages..."}
+                {crawlStatus === "parsing" && `Parsing pages (${pagesIndexed} crawled)...`}
+                {crawlStatus === "indexing" && `Building retrieval index (${functionsIndexed} functions parsed)...`}
+                {crawlStatus === "done" && `Done — ${pagesIndexed} pages and ${functionsIndexed} functions indexed.`}
+                {crawlStatus === "error" && (errorMessage || "Indexing failed.")}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Try links */}
         <div className="text-xs text-[#555555] flex flex-wrap justify-center gap-1 mb-8">
           Try:
@@ -109,7 +192,7 @@ const Index = () => {
               <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center text-green-400 mb-4 group-hover:scale-110 transition-transform">
                 <Wrench className="w-4 h-4" />
               </div>
-              <h3 className="text-[#EEEEEE] font-medium text-sm mb-1">Error fixar</h3>
+              <h3 className="text-[#EEEEEE] font-medium text-sm mb-1">Error fixer</h3>
               <p className="text-[#888888] text-xs">"Paste a traceback, get the fix"</p>
             </div>
 

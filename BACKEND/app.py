@@ -1,9 +1,9 @@
-from utils import process_input
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from model import UserInput, UserOutput, CrawlRequest, CrawlResponse
 from utils import crawl_docs
 from parser import parse_pages
+from pipeline import run_rag_pipeline
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -35,8 +35,14 @@ def read_root():
 async def handle_user_input(user_input: UserInput):
     """Endpoint to receive and process user input."""
     try:
-        result = process_input(user_input.content)
-        return UserOutput(processed_content=result, status="success")
+        result = run_rag_pipeline(
+            query=user_input.content,
+            source_url=user_input.source_url or user_input.context,
+            use_reranker=user_input.use_reranker,
+        )
+        return UserOutput(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -68,7 +74,7 @@ async def start_crawl(req: CrawlRequest, background_tasks: BackgroundTasks):
 
             # Phase 2 — parse
             crawl_status_dict[job_id]["status"] = "parsing"
-            functions = await parse_pages(pages, library=library_name)
+            functions = parse_pages(pages, library=library_name)
             parsed_store[job_id] = functions
 
             # Phase 3 — process and store (chunk, embed, chroma, bm25)
