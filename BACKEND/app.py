@@ -5,6 +5,7 @@ from utils import crawl_docs
 from parser import parse_pages
 from pipeline import run_rag_pipeline
 from dotenv import load_dotenv
+from fastapi.concurrency import run_in_threadpool
 load_dotenv()
 
 app = FastAPI(
@@ -33,9 +34,9 @@ def read_root():
 
 @app.post("/api/process", response_model=UserOutput)
 async def handle_user_input(user_input: UserInput):
-    """Endpoint to receive and process user input."""
     try:
-        result = run_rag_pipeline(
+        result = await run_in_threadpool(
+            run_rag_pipeline,
             query=user_input.content,
             source_url=user_input.source_url or user_input.context,
             use_reranker=user_input.use_reranker,
