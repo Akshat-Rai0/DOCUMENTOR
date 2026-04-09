@@ -1,35 +1,26 @@
 """
-parser.py — Phase 2 core pipeline (v4)
+parser.py — Phase 2 core pipeline (v5)
 
-Root cause fix from v3: scrape_static() already converts HTML to plain text
-before storing in page["markdown"]. The previous versions tried to parse HTML
-tags that don't exist. This version works entirely on the plain text format
-that scrape_static() actually produces.
-
-Plain text format from scrape_static (confirmed via debug):
-  - Function/class headings appear as:   fastapi.APIRouter\n¶
-  - OR as a dotted name on its own line:  fastapi.APIRouter.websocket\n¶
-  - Parameters appear as a table:
-        prefix\nAn optional path prefix...\nTYPE: str\nDEFAULT: ''\n
-  - Code examples appear inline as spaced-out Python:
-        from\nfastapi\nimport\nAPIRouter\n...
-  - No <pre>, no ##, no def/class keywords in doc pages (only inside source
-    code toggle text which is also plain text by the time we see it)
+v5 changes:
+  - Issue #3: Uses shared extract_library_name from url_utils
+  - Issue #5: Adds adapters for Sphinx, Read the Docs, JSDoc, and NumPy-style
+    docstrings alongside the existing MkDocs/FastAPI patterns.
 
 Strategy:
-  1. clean_page()    — strip nav/sponsor noise from the top of the plain text
+  1. clean_page()    — strip nav/sponsor noise from the plain text
   2. extract_items() — match dotted API names using plain-text patterns
-  3. For each match, extract:
-       - params: the (  *  , prefix = "" , ... ) block on the same/next line
-       - description: first prose paragraph after the ¶ marker
-       - example: first indented code block after the match
+     + Sphinx adapter  (`:py:func:`, `.. function::`, `dl.describe`)
+     + RTD adapter      (readthedocs layout markers)
+     + JSDoc adapter    (`@param`, `@returns`)
+     + NumPy adapter    (`Parameters\n----------`)
+  3. For each match, extract params, description, example
   4. map_to_schema() — validate into FunctionSchema
 """
 
 import re
 from typing import Optional
-from urllib.parse import urlparse
 from schemas.function import FunctionSchema
+from url_utils import extract_library_name
 
 
 # ---------------------------------------------------------------------------
@@ -64,32 +55,19 @@ _STOPWORDS = {
 def _is_valid_name(name: str) -> bool:
     if not name or len(name) < 2:
         return False
-    # must start with a letter
     if not name[0].isalpha():
         return False
-    # block known junk
     if name.lower() in _JUNK_NAMES:
         return False
-    # single short lowercase words with no dots are likely prose, not API names
     if "." not in name and name.islower() and len(name) < 5:
         return False
     return True
-
-
-def _extract_library_name(url: str) -> str:
-    host = re.sub(r"^www\.", "", urlparse(url).netloc)
-    parts = host.split(".")
-    name = parts[0]
-    if name in ("docs", "doc", "api"):
-        name = parts[1] if len(parts) > 1 else name
-    return name
 
 
 # ---------------------------------------------------------------------------
 # Stage 1 — clean plain text
 # ---------------------------------------------------------------------------
 
-# Lines that are pure nav/sponsor noise appearing before the real content
 _NOISE_LINE_RE = re.compile(
     r"^(sponsor|skip to content|follow\s|join the|subscribe|"
     r"fastapi cloud|newsletter|@fastapi|linkedin|twitter|"
@@ -97,22 +75,13 @@ _NOISE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Lines that are pure punctuation / single symbols
 _PUNCT_LINE_RE = re.compile(r"^[¶\-=~\.\,\:\;\|\s]{1,5}$")
 
 
 def clean_page(plain_text: str) -> tuple[str, list[str]]:
     """
     Clean up plain text from scrape_static().
-
-    Since scrape_static already strips HTML and returns plain text,
-    this function:
-      1. Removes nav/sponsor noise lines from the top
-      2. Extracts indented/fenced code blocks as a separate list
-      3. Returns (cleaned_text, code_blocks)
-
-    The 'markdown' key from scrape_static is already plain text —
-    no HTML parsing is done here.
+    Returns (cleaned_text, code_blocks).
     """
     lines = plain_text.splitlines()
     cleaned: list[str] = []
@@ -121,10 +90,8 @@ def clean_page(plain_text: str) -> tuple[str, list[str]]:
     in_code = False
 
     for line in lines:
-        # Detect fenced code blocks (```...```)
         if line.strip().startswith("```"):
             if in_code:
-                # end of code block
                 block = "\n".join(current_code).strip()
                 if block:
                     code_blocks.append(block)
@@ -139,7 +106,6 @@ def clean_page(plain_text: str) -> tuple[str, list[str]]:
             current_code.append(line)
             continue
 
-        # Skip pure noise lines
         if _NOISE_LINE_RE.match(line.strip()):
             continue
         if _PUNCT_LINE_RE.match(line):
@@ -147,7 +113,6 @@ def clean_page(plain_text: str) -> tuple[str, list[str]]:
 
         cleaned.append(line)
 
-    # flush any unclosed code block
     if current_code:
         block = "\n".join(current_code).strip()
         if block:
@@ -162,25 +127,60 @@ def clean_page(plain_text: str) -> tuple[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 # Pattern A: dotted API name on its own line, optionally followed by ¶
-# Matches:  "fastapi.APIRouter"  /  "fastapi.APIRouter.websocket"
 _DOTTED_NAME_RE = re.compile(
     r"^(?P<n>[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){1,})\s*¶?\s*$",
     re.MULTILINE,
 )
 
-# Pattern B: Python def/class (appears in source-code sections of some pages)
+# Pattern B: Python def/class (appears in source-code sections)
 _DEF_CLASS_RE = re.compile(
     r"^(?P<type>async def|def|class)\s+(?P<n>[a-zA-Z_]\w*)\s*(?P<params>\([^)]{0,400}\))?",
     re.MULTILINE,
 )
 
-# Matches the spaced-out param block:  ( * , prefix = "" , tags = None , ... )
-# scrape_static separates tokens with spaces/newlines, so we look for a
-# block starting with ( and ending with ) spanning up to 2000 chars
+# -- Issue #5 — Additional adapter patterns -----------------------------------
+
+# Sphinx: .. function:: name(params)  /  .. method::  /  .. class::
+_SPHINX_DIRECTIVE_RE = re.compile(
+    r"^\.\.\s+(?:py:)?(?:function|method|class|staticmethod|classmethod|module|attribute|data)::\s*"
+    r"(?P<n>[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*(?P<params>\([^)]{0,400}\))?",
+    re.MULTILINE,
+)
+
+# Sphinx cross-references in text: :py:func:`name`, :func:`name`, :meth:`name`
+_SPHINX_ROLE_RE = re.compile(
+    r":(?:py:)?(?:func|meth|class|attr|data|obj):`~?(?P<n>[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)`",
+)
+
+# JSDoc: @param {type} name - description  /  function name(params)
+_JSDOC_FUNC_RE = re.compile(
+    r"^(?:export\s+)?(?:async\s+)?function\s+(?P<n>[a-zA-Z_$]\w*)\s*(?P<params>\([^)]{0,400}\))?",
+    re.MULTILINE,
+)
+_JSDOC_PARAM_RE = re.compile(
+    r"@param\s+(?:\{[^}]*\}\s+)?(?P<name>[a-zA-Z_$]\w*)",
+)
+
+# NumPy-style docstring sections
+_NUMPY_SECTION_RE = re.compile(
+    r"^(?P<section>Parameters|Returns|Raises|Yields|Attributes|Methods|Notes|Examples)\s*\n"
+    r"-{3,}",
+    re.MULTILINE,
+)
+_NUMPY_PARAM_LINE_RE = re.compile(
+    r"^(?P<name>[a-zA-Z_]\w*)\s*:\s*(?P<type>.+)?$",
+)
+
+# Read the Docs: "class reference" or "API reference" heading patterns
+_RTD_HEADING_RE = re.compile(
+    r"^(?P<n>[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\((?P<params>[^)]*)\)\s*$",
+    re.MULTILINE,
+)
+
+# Spaced-out param block: ( * , prefix = "" , tags = None , ... )
 _SPACED_PARAMS_RE = re.compile(r"\(\s*[\*\w].*?\)", re.DOTALL)
 
-# Matches a TYPE: line in the parameter table — used to extract param names
-# Format:  "<param_name>\n<description prose>\nTYPE: <type>\nDEFAULT: <val>"
+# Parameter table: TYPE: lines
 _PARAM_TABLE_RE = re.compile(
     r"^([a-zA-Z_]\w*)\n(?:(?!TYPE:|DEFAULT:|PARAMETER|DESCRIPTION).*\n)*?TYPE:\s*\S",
     re.MULTILINE,
@@ -188,23 +188,8 @@ _PARAM_TABLE_RE = re.compile(
 
 
 def _extract_params_from_table(text_window: str) -> list[str]:
-    """
-    Extract parameter names from the PARAMETER/DESCRIPTION table that
-    MkDocs griddoc renders after each function signature.
-
-    Table format in plain text:
-        PARAMETER   DESCRIPTION
-        prefix
-        An optional path prefix for the router.
-        TYPE: str
-        DEFAULT: ''
-        tags
-        A list of tags...
-        TYPE: list[str | Enum] | None
-        ...
-    """
+    """Extract parameter names from MkDocs PARAMETER/DESCRIPTION table."""
     params = []
-    # Find the PARAMETER DESCRIPTION header
     table_start = text_window.find("PARAMETER")
     if table_start == -1:
         return []
@@ -212,11 +197,9 @@ def _extract_params_from_table(text_window: str) -> list[str]:
     table_text = text_window[table_start:]
     lines = table_text.splitlines()
 
-    # Skip the header line "PARAMETER   DESCRIPTION"
     i = 1
     while i < len(lines):
         line = lines[i].strip()
-        # A param name line: non-empty, a single valid identifier, not a keyword
         if (line
                 and re.match(r"^[a-zA-Z_]\w*$", line)
                 and line.lower() not in _STOPWORDS
@@ -224,10 +207,8 @@ def _extract_params_from_table(text_window: str) -> list[str]:
                 and line not in ("PARAMETER", "DESCRIPTION", "TYPE",
                                  "DEFAULT", "Note", "None", "True", "False")):
             params.append(line)
-        # Stop at the next section heading (all-caps word alone on a line
-        # that isn't a known param section marker)
         if line in ("SOURCE", "RETURNS", "RAISES", "YIELDS",
-                    "ATTRIBUTES", "METHODS"):
+                     "ATTRIBUTES", "METHODS"):
             break
         i += 1
 
@@ -235,17 +216,11 @@ def _extract_params_from_table(text_window: str) -> list[str]:
 
 
 def _extract_params_from_signature(sig_text: str) -> list[str]:
-    """
-    Extract params from the spaced-out signature block.
-    e.g. '( * , prefix = "" , tags = None , ... )'
-    Keeps only bare identifier tokens that appear before '='.
-    """
-    # Remove the outer parens
+    """Extract params from spaced-out signature block."""
     inner = sig_text.strip().lstrip("(").rstrip(")")
     params = []
     for token in inner.split(","):
         token = token.strip().lstrip("*").strip()
-        # Take only the part before = or space
         name = re.split(r"[\s=:\(]", token)[0].strip()
         if (name
                 and re.match(r"^[a-zA-Z_]\w*$", name)
@@ -256,19 +231,45 @@ def _extract_params_from_signature(sig_text: str) -> list[str]:
     return params
 
 
+def _extract_numpy_params(text_window: str) -> list[str]:
+    """Extract parameter names from NumPy-style docstring sections."""
+    params = []
+    match = _NUMPY_SECTION_RE.search(text_window)
+    if not match or match.group("section") != "Parameters":
+        return []
+
+    section_text = text_window[match.end():]
+    for line in section_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Stop at next section header
+        if re.match(r"^[A-Z][a-z]+\s*$", line):
+            break
+        if re.match(r"^-{3,}$", line):
+            break
+        pm = _NUMPY_PARAM_LINE_RE.match(line)
+        if pm:
+            name = pm.group("name")
+            if (name.lower() not in _STOPWORDS
+                    and name.lower() not in _JUNK_NAMES
+                    and name not in ("self", "cls")):
+                params.append(name)
+    return params
+
+
+def _extract_jsdoc_params(text_window: str) -> list[str]:
+    """Extract parameter names from JSDoc @param tags."""
+    params = []
+    for m in _JSDOC_PARAM_RE.finditer(text_window[:2000]):
+        name = m.group("name")
+        if name.lower() not in _STOPWORDS and name.lower() not in _JUNK_NAMES:
+            params.append(name)
+    return params
+
+
 def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str]:
-    """
-    Find the first real prose paragraph after a function heading.
-
-    Skips:
-      - The ¶ symbol
-      - Lines that are just type names / punctuation
-      - Lines starting with code keywords
-      - PARAMETER / TYPE / DEFAULT table lines
-      - Lines shorter than 20 chars (likely fragment noise)
-
-    Returns the first 1-3 prose lines joined into a string, or None.
-    """
+    """Find the first real prose paragraph after a function heading."""
     skip_re = re.compile(
         r"^(¶|PARAMETER|DESCRIPTION|TYPE:|DEFAULT:|Example|SOURCE|"
         r"Bases:|Read more|Note:|Warning:|__CODE_BLOCK__|"
@@ -276,9 +277,7 @@ def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str
         r"@\w|#|\`\`\`)",
         re.IGNORECASE,
     )
-    # Also skip lines that are spaced-out identifiers/tokens from the signature
-    # (they look like:  "prefix\n=\n\"\"\n,\ntags\n=")
-    punct_only = re.compile(r'^[\(\)\[\]{}\.,=\*"\'\s:¶|]{1,8}$')
+    punct_only = re.compile(r'^[\(\)\[\]{}\\.,=\*"\'\\s:¶|]{1,8}$')
 
     snippet = text_window[:max_chars]
     prose = []
@@ -286,7 +285,7 @@ def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str
         s = line.strip()
         if not s:
             if prose:
-                break   # blank line after content = end of paragraph
+                break
             continue
         if skip_re.match(s):
             continue
@@ -328,7 +327,6 @@ def extract_items(
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
             continue
-        # Use just the last component as the display name, keep full for dedup
         short_name = raw_name.split(".")[-1]
         if not _is_valid_name(short_name):
             continue
@@ -336,7 +334,6 @@ def extract_items(
             continue
         seen.add(raw_name)
 
-        # Determine type from name structure
         parts = raw_name.split(".")
         if len(parts) == 1:
             etype = "function"
@@ -345,17 +342,16 @@ def extract_items(
         else:
             etype = "method"
 
-        # Look for params in the next 2000 chars
         window = plain_text[m.start(): m.start() + 2000]
 
-        # Try table first (most reliable for doc reference pages)
         params = _extract_params_from_table(window)
-
-        # Fall back to spaced signature block
         if not params:
             sig_m = _SPACED_PARAMS_RE.search(window)
             if sig_m:
                 params = _extract_params_from_signature(sig_m.group(0))
+        # Try NumPy-style params
+        if not params:
+            params = _extract_numpy_params(window)
 
         desc = _extract_description(plain_text[m.end():])
         example = _nearest_code_block(m.start(), plain_text, code_blocks)
@@ -375,7 +371,6 @@ def extract_items(
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
             continue
-        # Build a qualified name for dedup
         key = f"{library}.{raw_name}"
         if key in seen or raw_name in seen:
             continue
@@ -384,7 +379,6 @@ def extract_items(
         etype = "function" if "def" in m.group("type") else "class"
         raw_sig = m.group("params") or ""
 
-        # Clean params from the signature
         params = []
         for token in raw_sig.strip("()").split(","):
             token = token.strip().lstrip("*")
@@ -395,6 +389,100 @@ def extract_items(
                     and name.lower() not in _STOPWORDS
                     and name.lower() not in _JUNK_NAMES):
                 params.append(name)
+
+        desc = _extract_description(plain_text[m.end():])
+        example = _nearest_code_block(m.start(), plain_text, code_blocks)
+
+        items.append({
+            "type": etype,
+            "name": raw_name,
+            "library": library,
+            "params": params,
+            "description": desc,
+            "example": example,
+            "source_url": source_url,
+        })
+
+    # --- Issue #5 — Sphinx directive pattern ---
+    for m in _SPHINX_DIRECTIVE_RE.finditer(plain_text):
+        raw_name = m.group("n")
+        if not _is_valid_name(raw_name):
+            continue
+        if raw_name in seen:
+            continue
+        seen.add(raw_name)
+
+        raw_sig = m.group("params") or ""
+        params = _extract_params_from_signature(raw_sig) if raw_sig else []
+        if not params:
+            window = plain_text[m.start(): m.start() + 2000]
+            params = _extract_numpy_params(window)
+
+        parts = raw_name.split(".")
+        if parts[-1][0:1].isupper():
+            etype = "class"
+        else:
+            etype = "function"
+
+        desc = _extract_description(plain_text[m.end():])
+        example = _nearest_code_block(m.start(), plain_text, code_blocks)
+
+        items.append({
+            "type": etype,
+            "name": raw_name,
+            "library": library,
+            "params": params,
+            "description": desc,
+            "example": example,
+            "source_url": source_url,
+        })
+
+    # --- Issue #5 — JSDoc function pattern ---
+    for m in _JSDOC_FUNC_RE.finditer(plain_text):
+        raw_name = m.group("n")
+        if not _is_valid_name(raw_name):
+            continue
+        key = f"{library}.{raw_name}"
+        if key in seen or raw_name in seen:
+            continue
+        seen.add(key)
+
+        raw_sig = m.group("params") or ""
+        params = _extract_params_from_signature(raw_sig) if raw_sig else []
+        if not params:
+            window = plain_text[m.start(): m.start() + 2000]
+            params = _extract_jsdoc_params(window)
+
+        desc = _extract_description(plain_text[m.end():])
+        example = _nearest_code_block(m.start(), plain_text, code_blocks)
+
+        items.append({
+            "type": "function",
+            "name": raw_name,
+            "library": library,
+            "params": params,
+            "description": desc,
+            "example": example,
+            "source_url": source_url,
+        })
+
+    # --- Issue #5 — RTD heading pattern: name(params) on its own line ---
+    for m in _RTD_HEADING_RE.finditer(plain_text):
+        raw_name = m.group("n")
+        if not _is_valid_name(raw_name):
+            continue
+        if raw_name in seen:
+            continue
+        seen.add(raw_name)
+
+        raw_params = m.group("params") or ""
+        params = _extract_params_from_signature(f"({raw_params})") if raw_params else []
+
+        parts = raw_name.split(".")
+        if parts[-1][0:1].isupper():
+            etype = "class"
+        else:
+            etype = "function"
 
         desc = _extract_description(plain_text[m.end():])
         example = _nearest_code_block(m.start(), plain_text, code_blocks)
@@ -453,16 +541,6 @@ def parse_pages(
     """
     Main entry point. Accepts crawl_docs() output and returns structured
     FunctionSchema objects ready for chunking + embedding.
-
-    Args:
-        pages:   List of {"url": str, "markdown": str} from the crawler.
-                 The "markdown" value is plain text (scrape_static already
-                 converts HTML to text before storing it here).
-        library: Override library name (auto-detected from URL if None).
-        version: Optional version string e.g. "2.1.0".
-
-    Returns:
-        Deduplicated list of FunctionSchema objects.
     """
     all_items: list[dict] = []
     global_seen: set[str] = set()
@@ -470,7 +548,7 @@ def parse_pages(
     for page in pages:
         url = page.get("url", "")
         content = page.get("markdown", "")
-        lib_name = library or _extract_library_name(url)
+        lib_name = library or extract_library_name(url)
 
         plain_text, code_blocks = clean_page(content)
         raw_items = extract_items(plain_text, code_blocks, lib_name, url)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from url_utils import extract_library_name
 from vector_store import DATA_DIR, build_collection_name, chroma_client, model as embedding_model
 
 
@@ -17,17 +18,9 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _infer_library_from_source_url(source_url: Optional[str]) -> Optional[str]:
+    """Use the shared extract_library_name utility (Issue #3)."""
     if source_url:
-        raw = source_url.strip()
-        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
-        if parsed.netloc:
-            # Match exactly how app.py extracts library_name:
-            # url.split("//")[-1].split("/")[0]  → "fastapi.tiangolo.com"
-            # then build_collection_name lowercases and replaces - with _
-            # BUT app.py passes the full domain as library_name to process_and_store
-            # So we need the full netloc here too
-            netloc = parsed.netloc  # "fastapi.tiangolo.com"
-            return netloc
+        return extract_library_name(source_url)
 
     # fallback — find most recently indexed library from manifests
     data_root = Path(DATA_DIR)
@@ -177,15 +170,40 @@ def hybrid_retrieve(
         raise ValueError("No indexed library found. Crawl documentation first or pass source_url.")
 
     collection_name = build_collection_name(library)
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        semantic_future = executor.submit(_semantic_search, query, collection_name, semantic_top_k)
-        bm25_future = executor.submit(_bm25_search, query, collection_name, bm25_top_k)
-        semantic_results = semantic_future.result()
-        bm25_results = bm25_future.result()
+
+    # -- Issue #7 — query expansion --------------------------------------------
+    try:
+        from query_rewriter import expand_query
+        query_variants = expand_query(query)
+    except Exception:
+        query_variants = [query]
+
+    all_semantic: list[dict[str, Any]] = []
+    all_bm25: list[dict[str, Any]] = []
+    seen_chunk_ids: set[str] = set()
+
+    for variant in query_variants:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            semantic_future = executor.submit(_semantic_search, variant, collection_name, semantic_top_k)
+            bm25_future = executor.submit(_bm25_search, variant, collection_name, bm25_top_k)
+            sem_results = semantic_future.result()
+            bm_results = bm25_future.result()
+
+        # Deduplicate across variants
+        for r in sem_results:
+            cid = r.get("chunk_id", "")
+            if cid not in seen_chunk_ids:
+                seen_chunk_ids.add(cid)
+                all_semantic.append(r)
+        for r in bm_results:
+            cid = r.get("chunk_id", "")
+            if cid not in seen_chunk_ids:
+                seen_chunk_ids.add(cid)
+                all_bm25.append(r)
 
     fused_results = reciprocal_rank_fusion(
-        semantic_results=semantic_results,
-        bm25_results=bm25_results,
+        semantic_results=all_semantic,
+        bm25_results=all_bm25,
         k=rrf_k,
         top_k=fused_top_k,
     )
@@ -193,7 +211,8 @@ def hybrid_retrieve(
     return {
         "library": library,
         "collection_name": collection_name,
-        "semantic_results": semantic_results,
-        "bm25_results": bm25_results,
+        "semantic_results": all_semantic[:semantic_top_k],
+        "bm25_results": all_bm25[:bm25_top_k],
         "fused_results": fused_results,
+        "query_variants": query_variants,
     }

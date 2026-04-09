@@ -1,3 +1,4 @@
+import math
 from typing import Any, Optional
 
 from intent_classifier import classify_intent
@@ -25,6 +26,25 @@ def _serialize_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return serialized
+
+
+def _reranker_confidence(chunks: list[dict[str, Any]]) -> float:
+    """
+    Issue #9 — derive confidence from the actual reranker score
+    instead of the LLM's self-reported value.
+    Uses sigmoid to normalise the raw cross-encoder score to [0, 1].
+    """
+    if not chunks:
+        return 0.0
+
+    top = chunks[0]
+    raw_score = top.get("reranker_score")
+    if raw_score is None:
+        # Fall back to RRF score (already 0-1ish)
+        return min(float(top.get("rrf_score", 0.0)) * 5, 1.0)
+
+    # Sigmoid normalisation of cross-encoder score
+    return 1.0 / (1.0 + math.exp(-float(raw_score)))
 
 
 def run_rag_pipeline(
@@ -64,6 +84,9 @@ def run_rag_pipeline(
         chunks=final_chunks,
     )
 
+    # Issue #9 — replace LLM self-reported confidence with reranker score
+    confidence = _reranker_confidence(final_chunks)
+
     explanation = llm_answer.get("explanation") or "The answer is not in the retrieved documentation chunks."
     response_payload: dict[str, Any] = {
         "status": "success",
@@ -74,7 +97,7 @@ def run_rag_pipeline(
         "avoid_when": llm_answer.get("avoid_when", []),
         "code_snippet": llm_answer.get("code_snippet", ""),
         "source_url": llm_answer.get("source_url") or source_url,
-        "confidence": float(llm_answer.get("confidence", 0.0)),
+        "confidence": confidence,
         "explanation": explanation,
         "fixes": llm_answer.get("fixes", []),
         "retrieved_chunks": _serialize_chunks(final_chunks),

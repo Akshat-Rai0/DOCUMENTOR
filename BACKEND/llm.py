@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 import httpx
 
@@ -45,6 +45,45 @@ def _call_local_model(
     if not text:
         raise ValueError("Local model returned an empty response")
     return text
+
+
+# -- Streaming support (Issue #2) ---------------------------------------------
+
+def _stream_local_model(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    json_mode: bool,
+) -> Generator[str, None, None]:
+    """Yield text tokens from Ollama with stream=True."""
+    payload: dict[str, Any] = {
+        "model": _local_model_name(),
+        "system": system_prompt,
+        "prompt": user_prompt,
+        "stream": True,
+        "options": {
+            "temperature": 0,
+            "num_predict": max_tokens,
+        },
+    }
+    if json_mode:
+        payload["format"] = "json"
+
+    with httpx.stream("POST", _local_model_url(), json=payload, timeout=180) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                token = data.get("response", "")
+                if token:
+                    yield token
+                if data.get("done", False):
+                    return
+            except json.JSONDecodeError:
+                continue
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -216,3 +255,29 @@ def generate_grounded_answer(
         return _normalize_answer(parsed, chunks=chunks)
     except Exception:
         return _fallback_answer(intent=intent, chunks=chunks)
+
+
+def generate_grounded_answer_stream(
+    query: str,
+    intent: str,
+    chunks: list[dict[str, Any]],
+) -> Generator[str, None, None]:
+    """Streaming version — yields raw tokens from the LLM."""
+    if not chunks:
+        fallback = _fallback_answer(intent=intent, chunks=chunks)
+        yield json.dumps(fallback)
+        return
+
+    user_prompt = build_user_prompt(intent=intent, query=query, chunks=chunks)
+
+    try:
+        for token in _stream_local_model(
+            system_prompt=SYSTEM_GROUNDING_PROMPT,
+            user_prompt=user_prompt,
+            max_tokens=1000,
+            json_mode=True,
+        ):
+            yield token
+    except Exception:
+        fallback = _fallback_answer(intent=intent, chunks=chunks)
+        yield json.dumps(fallback)

@@ -24,7 +24,7 @@ const Hero = () => {
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Link to="/explore">
+          <Link to="/">
             <Button size="lg" className="gap-2 glow-primary px-8">
               <BookOpen className="w-4 h-4" />
               Explore DOCUMENTOR
