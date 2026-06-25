@@ -1,9 +1,9 @@
-from typing import Any
+from typing import Any, Optional
 
 from sentence_transformers import CrossEncoder
 
 _RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-_RERANKER_MODEL: CrossEncoder | None = None
+_RERANKER_MODEL: Optional[CrossEncoder] = None
 
 
 def _get_reranker_model() -> CrossEncoder:

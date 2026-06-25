@@ -84,7 +84,7 @@ def run_rag_pipeline(
         chunks=final_chunks,
     )
 
-    # Issue #9 — replace LLM self-reported confidence with reranker score
+
     confidence = _reranker_confidence(final_chunks)
 
     explanation = llm_answer.get("explanation") or "The answer is not in the retrieved documentation chunks."

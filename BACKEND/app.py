@@ -13,7 +13,7 @@ from job_store import create_job, update_job, get_job
 from dotenv import load_dotenv
 from fastapi.concurrency import run_in_threadpool
 
-# -- Rate limiting (Issue #18) ------------------------------------------------
+
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -123,7 +123,7 @@ async def handle_user_input_stream(request: Request, user_input: UserInput):
                 from llm import _fallback_answer
                 answer = _fallback_answer(intent=intent_result.intent, chunks=final_chunks)
 
-            # Override confidence with reranker score (Issue #9)
+            # Override confidence with reranker score 
             if final_chunks and final_chunks[0].get("reranker_score") is not None:
                 import math
                 raw = float(final_chunks[0]["reranker_score"])
@@ -184,7 +184,7 @@ async def start_crawl(request: Request, req: CrawlRequest, background_tasks: Bac
 
             update_job(job_id, status="done", pages=len(pages), functions=len(functions))
         except Exception as e:
-            # Issue #17 — log the full traceback, store sanitised message
+
             logger.exception("Crawl job failed for %s", req.url)
             update_job(
                 job_id,

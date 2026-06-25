@@ -11,7 +11,7 @@ _ALLOWED_INTENTS = {"function_search", "error_fix", "concept_explain"}
 
 
 def _local_model_name() -> str:
-    return os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+    return os.getenv("OLLAMA_MODEL", "gamma4")
 
 
 def _local_model_url() -> str:
@@ -46,8 +46,6 @@ def _call_local_model(
         raise ValueError("Local model returned an empty response")
     return text
 
-
-# -- Streaming support (Issue #2) ---------------------------------------------
 
 def _stream_local_model(
     *,
