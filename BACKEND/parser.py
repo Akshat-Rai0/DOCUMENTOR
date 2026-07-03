@@ -75,6 +75,17 @@ _NOISE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# added functoinality to prevent prompt injection attacks by detecting common patterns in the text
+_INJECTION_PATTERNS = re.compile(
+    r"(ignore (previous|all) instructions|disregard (the )?above|"
+    r"forget (everything|above))",
+    re.IGNORECASE
+)
+
+def _detect_injection(text: str) -> bool:
+    """Returns True if potential prompt injection patterns are detected."""
+    return bool(_INJECTION_PATTERNS.search(text))
+
 _PUNCT_LINE_RE = re.compile(r"^[¶\-=~\.\,\:\;\|\s]{1,5}$")
 
 

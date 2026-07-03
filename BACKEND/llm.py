@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from typing import Any, Generator, Optional
@@ -6,6 +7,9 @@ from typing import Any, Generator, Optional
 import httpx
 
 from prompts import SYSTEM_GROUNDING_PROMPT, build_user_prompt
+from parser import _detect_injection
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_INTENTS = {"function_search", "error_fix", "concept_explain"}
 
@@ -255,18 +259,39 @@ def generate_grounded_answer(
         return _fallback_answer(intent=intent, chunks=chunks)
 
 
+def _sanitize_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter out chunks with potential injection patterns."""
+    from parser import _detect_injection
+    import re
+    safe_chunks = []
+    for chunk in chunks:
+        text = chunk.get("text", "")
+        source_url = chunk.get("source_url", "unknown")
+        if not _detect_injection(text):
+            safe_chunks.append(chunk)
+        else:
+            # Log the flag hit for observability
+            logger.warning(
+                f"Injection pattern detected in chunk from {source_url}. "
+                f"Chunk text preview: {text[:200]}..."
+            )
+    return safe_chunks 
+
+
+
 def generate_grounded_answer_stream(
     query: str,
     intent: str,
     chunks: list[dict[str, Any]],
 ) -> Generator[str, None, None]:
     """Streaming version — yields raw tokens from the LLM."""
-    if not chunks:
+    safe_chunks = _sanitize_chunks(chunks)
+    if not safe_chunks:
         fallback = _fallback_answer(intent=intent, chunks=chunks)
         yield json.dumps(fallback)
         return
 
-    user_prompt = build_user_prompt(intent=intent, query=query, chunks=chunks)
+    user_prompt = build_user_prompt(intent=intent, query=query, chunks=safe_chunks)
 
     try:
         for token in _stream_local_model(
