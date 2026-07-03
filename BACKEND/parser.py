@@ -1,10 +1,5 @@
 """
-parser.py — Phase 2 core pipeline (v5)
-
-v5 changes:
-  - Issue #3: Uses shared extract_library_name from url_utils
-  - Issue #5: Adds adapters for Sphinx, Read the Docs, JSDoc, and NumPy-style
-    docstrings alongside the existing MkDocs/FastAPI patterns.
+parser.py — Phase 2 core pipeline (v6)
 
 Strategy:
   1. clean_page()    — strip nav/sponsor noise from the plain text
@@ -62,6 +57,19 @@ def _is_valid_name(name: str) -> bool:
     if "." not in name and name.islower() and len(name) < 5:
         return False
     return True
+
+
+
+def _seen_key(library: str, raw_name: str) -> str:
+    """
+    Single canonical dedup key used by every extraction pattern and by
+    parse_pages()'s cross-page dedup. Using one consistent format here
+    (rather than each pattern rolling its own bare/prefixed key) is what
+    prevents the same function being emitted twice when two different
+    doc formats (e.g. a Sphinx directive and a code example) both match
+    the same underlying API on one page.
+    """
+    return f"{library}::{raw_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -341,9 +349,11 @@ def extract_items(
         short_name = raw_name.split(".")[-1]
         if not _is_valid_name(short_name):
             continue
-        if raw_name in seen:
+
+        key = _seen_key(library, raw_name)
+        if key in seen:
             continue
-        seen.add(raw_name)
+        seen.add(key)
 
         parts = raw_name.split(".")
         if len(parts) == 1:
@@ -382,8 +392,9 @@ def extract_items(
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
             continue
-        key = f"{library}.{raw_name}"
-        if key in seen or raw_name in seen:
+
+        key = _seen_key(library, raw_name)
+        if key in seen:
             continue
         seen.add(key)
 
@@ -419,9 +430,11 @@ def extract_items(
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
             continue
-        if raw_name in seen:
+
+        key = _seen_key(library, raw_name)
+        if key in seen:
             continue
-        seen.add(raw_name)
+        seen.add(key)
 
         raw_sig = m.group("params") or ""
         params = _extract_params_from_signature(raw_sig) if raw_sig else []
@@ -453,8 +466,9 @@ def extract_items(
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
             continue
-        key = f"{library}.{raw_name}"
-        if key in seen or raw_name in seen:
+
+        key = _seen_key(library, raw_name)
+        if key in seen:
             continue
         seen.add(key)
 
@@ -477,14 +491,16 @@ def extract_items(
             "source_url": source_url,
         })
 
-    # --- Issue #5 — RTD heading pattern: name(params) on its own line ---
+
     for m in _RTD_HEADING_RE.finditer(plain_text):
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
             continue
-        if raw_name in seen:
+
+        key = _seen_key(library, raw_name)
+        if key in seen:
             continue
-        seen.add(raw_name)
+        seen.add(key)
 
         raw_params = m.group("params") or ""
         params = _extract_params_from_signature(f"({raw_params})") if raw_params else []
@@ -565,7 +581,7 @@ def parse_pages(
         raw_items = extract_items(plain_text, code_blocks, lib_name, url)
 
         for item in raw_items:
-            key = f"{item['library']}::{item['name']}"
+            key = _seen_key(item["library"], item["name"])
             if key not in global_seen:
                 global_seen.add(key)
                 all_items.append(item)
