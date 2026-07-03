@@ -88,17 +88,21 @@ def _semantic_search(query: str, collection_name: str, top_k: int) -> list[dict[
     return ranked
 
 
+python_bm25_cache: dict[str, dict] = {}
+
 def _bm25_search(query: str, collection_name: str, top_k: int) -> list[dict[str, Any]]:
-    bm25_path = _bm25_index_path(collection_name)
-    if not bm25_path.exists():
-        return []
+    if collection_name not in python_bm25_cache:
+        bm25_path = _bm25_index_path(collection_name)
+        if not bm25_path.exists():
+            return []
+        try:
+            with bm25_path.open("rb") as f:
+                payload = pickle.load(f)
+        except Exception:
+            return []
+        python_bm25_cache[collection_name] = payload
 
-    try:
-        with bm25_path.open("rb") as f:
-            payload = pickle.load(f)
-    except Exception:
-        return []
-
+    payload = python_bm25_cache[collection_name]
     bm25 = payload.get("bm25")
     ids = payload.get("ids", [])
     chunks = payload.get("chunks", [])
@@ -126,8 +130,6 @@ def _bm25_search(query: str, collection_name: str, top_k: int) -> list[dict[str,
         )
 
     return ranked
-
-
 def reciprocal_rank_fusion(
     semantic_results: list[dict[str, Any]],
     bm25_results: list[dict[str, Any]],
