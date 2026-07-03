@@ -37,7 +37,12 @@ except Exception as e:
         f"Original error: {e!s}.{hint}"
     ) from e
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+from functools import lru_cache
+from sentence_transformers import SentenceTransformer
+
+@lru_cache(maxsize=1)
+def get_embedding_model() -> SentenceTransformer:
+    return SentenceTransformer("all-MiniLM-L6-v2")  # match whatever model name you currently use
 
 # Issue #8 — write lock to prevent race conditions on delete+recreate
 _chroma_write_lock = threading.Lock()
