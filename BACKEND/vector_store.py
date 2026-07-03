@@ -174,7 +174,7 @@ def process_and_store(
     chunks, metadatas, ids = _build_sub_chunks(functions, col_name)
 
     # 2. Generate embeddings
-    embeddings = model.encode(chunks, show_progress_bar=True).tolist()
+    embeddings = get_embedding_model.encode(chunks, show_progress_bar=True).tolist()
 
     # 3. Store in ChromaDB (Issue #8 — use write lock)
     with _chroma_write_lock:
