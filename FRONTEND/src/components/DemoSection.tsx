@@ -10,122 +10,179 @@ const presetQueries: Record<string, string[]> = {
 
 type Mode = "recommend" | "antipattern" | "errorfix";
 
+// Map frontend modes to backend intents
+const modeToIntent: Record<Mode, string> = {
+  recommend: "function_search",
+  antipattern: "concept_explain",
+  errorfix: "error_fix",
+};
+
+interface BackendResponse {
+  status: string;
+  intent: string;
+  processed_content: string;
+  recommended_functions: string[];
+  use_when: string[];
+  avoid_when: string[];
+  code_snippet: string;
+  source_url: string;
+  confidence: number;
+  explanation: string;
+  fixes: string[];
+  retrieved_chunks: Array<{
+    chunk_id: string;
+    score: number;
+    text: string;
+    source_url: string;
+    function_name: string;
+    rank: number;
+  }>;
+}
+
 interface SimulatedResponse {
   mode: Mode;
   query: string;
   content: React.ReactNode;
 }
 
-const simulateResponse = (mode: Mode, query: string): SimulatedResponse => {
-  const responses: Record<Mode, Record<string, React.ReactNode>> = {
-    recommend: {
-      default: (
-        <div className="space-y-4">
+const callBackend = async (query: string, mode: Mode): Promise<BackendResponse> => {
+  const response = await fetch('http://localhost:8000/api/process', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: query,
+      intent: modeToIntent[mode],
+      use_reranker: true,
+    }),
+  });
+  
+  if (!response.ok) {
+  const body = await response.json().catch(() => null);
+  throw new Error(body?.detail || `Backend error: ${response.statusText}`);
+}
+
+  return response.json();
+};
+
+const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNode => {
+  if (mode === "recommend") {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-primary/10 text-primary">Recommended</span>
+          <span className="text-xs text-muted-foreground">{data.recommended_functions.length} candidates found</span>
+          <span className="text-xs text-muted-foreground">Confidence: {(data.confidence * 100).toFixed(0)}%</span>
+        </div>
+        <div className="space-y-3">
+          {data.recommended_functions.map((func, idx) => (
+            <div key={idx} className="border border-border rounded-lg p-4 bg-background/50">
+              <div className="flex items-center justify-between mb-2">
+                <code className="text-primary font-mono text-sm font-semibold">{func}</code>
+                {idx === 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">★ Best match</span>}
+              </div>
+              <p className="text-sm text-muted-foreground mb-2">{data.explanation}</p>
+              {data.code_snippet && (
+                <div className="code-block p-3 text-xs whitespace-pre-wrap">
+                  {data.code_snippet}
+                </div>
+              )}
+              {data.use_when.length > 0 && (
+                <div className="mt-3">
+                  <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-1">Use when</span>
+                  <ul className="text-sm text-muted-foreground space-y-1">
+                    {data.use_when.map((item, i) => <li key={i}>• {item}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {data.source_url && (
+          <div className="text-xs text-muted-foreground border-t border-border pt-3">
+            Source: <a href={data.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{data.source_url}</a>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (mode === "antipattern") {
+    return (
+      <div className="space-y-4">
+        <div className="border border-border rounded-lg p-4 bg-background/50">
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-primary/10 text-primary">Recommended</span>
-            <span className="text-xs text-muted-foreground">2 candidates found</span>
+            <code className="text-primary font-mono text-sm font-semibold">{data.recommended_functions[0] || "Function"}</code>
           </div>
-          <div className="space-y-3">
-            <div className="border border-border rounded-lg p-4 bg-background/50">
-              <div className="flex items-center justify-between mb-2">
-                <code className="text-primary font-mono text-sm font-semibold">sklearn.preprocessing.StandardScaler</code>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">★ Best match</span>
-              </div>
-              <p className="text-sm text-muted-foreground mb-2">Zero mean, unit variance. Use when your model assumes normally distributed features (SVM, logistic regression).</p>
-              <div className="code-block p-3 text-xs">
-                <span className="text-muted-foreground">from</span> <span className="text-primary">sklearn.preprocessing</span> <span className="text-muted-foreground">import</span> StandardScaler{"\n"}
-                scaler = StandardScaler().fit_transform(X)
-              </div>
-            </div>
-            <div className="border border-border rounded-lg p-4 bg-background/50">
-              <div className="flex items-center justify-between mb-2">
-                <code className="text-accent font-mono text-sm font-semibold">sklearn.preprocessing.MinMaxScaler</code>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent">Alternative</span>
-              </div>
-              <p className="text-sm text-muted-foreground mb-2">Scales to [0, 1]. Use when you need bounded values (neural networks, image pixels).</p>
-              <div className="code-block p-3 text-xs">
-                <span className="text-muted-foreground">from</span> <span className="text-primary">sklearn.preprocessing</span> <span className="text-muted-foreground">import</span> MinMaxScaler{"\n"}
-                scaler = MinMaxScaler().fit_transform(X)
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-muted-foreground border-t border-border pt-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-            Trade-off: StandardScaler preserves outlier distances; MinMaxScaler compresses them.
-          </div>
-        </div>
-      ),
-    },
-    antipattern: {
-      default: (
-        <div className="space-y-4">
-          <div className="border border-border rounded-lg p-4 bg-background/50">
-            <div className="flex items-center gap-2 mb-3">
-              <code className="text-primary font-mono text-sm font-semibold">pandas.DataFrame.apply()</code>
-            </div>
+          {(data.use_when.length > 0 || data.avoid_when.length > 0) && (
             <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-2">✓ Use when</span>
-                <ul className="text-sm text-muted-foreground space-y-1">
-                  <li>• Row-wise custom logic with multiple columns</li>
-                  <li>• Complex string transformations</li>
-                  <li>• Applying non-vectorizable functions</li>
-                </ul>
-              </div>
-              <div>
-                <span className="text-xs font-mono uppercase tracking-wider text-destructive block mb-2">✗ Avoid when</span>
-                <ul className="text-sm text-muted-foreground space-y-1">
-                  <li>• Vectorized alternatives exist (10–100× slower)</li>
-                  <li>• Simple arithmetic or comparisons</li>
-                  <li>• Operations on a single column</li>
-                </ul>
-              </div>
+              {data.use_when.length > 0 && (
+                <div>
+                  <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-2">✓ Use when</span>
+                  <ul className="text-sm text-muted-foreground space-y-1">
+                    {data.use_when.map((item, i) => <li key={i}>• {item}</li>)}
+                  </ul>
+                </div>
+              )}
+              {data.avoid_when.length > 0 && (
+                <div>
+                  <span className="text-xs font-mono uppercase tracking-wider text-destructive block mb-2">✗ Avoid when</span>
+                  <ul className="text-sm text-muted-foreground space-y-1">
+                    {data.avoid_when.map((item, i) => <li key={i}>• {item}</li>)}
+                  </ul>
+                </div>
+              )}
             </div>
-            <div className="code-block p-3 text-xs space-y-2">
-              <div><span className="text-destructive">✗</span> <span className="text-muted-foreground">df['c'] = df.apply(lambda r: r['a'] + r['b'], axis=1)</span></div>
-              <div><span className="text-primary">✓</span> <span className="text-muted-foreground">df['c'] = df['a'] + df['b']  </span><span className="text-primary"># 50× faster</span></div>
+          )}
+          {data.code_snippet && (
+            <div className="code-block p-3 text-xs whitespace-pre-wrap">
+              {data.code_snippet}
             </div>
-          </div>
-          <div className="text-xs text-muted-foreground border-t border-border pt-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-destructive" />
-            pandas.apply() with axis=1 is essentially a Python for-loop in disguise.
-          </div>
+          )}
         </div>
-      ),
-    },
-    errorfix: {
-      default: (
-        <div className="space-y-4">
-          <div className="border border-destructive/30 rounded-lg p-4 bg-destructive/5">
-            <div className="flex items-center gap-2 mb-2">
-              <Bug className="w-4 h-4 text-destructive" />
-              <span className="text-xs font-mono text-destructive">ModuleNotFoundError</span>
-            </div>
-            <code className="text-sm text-muted-foreground">No module named 'sklearn'</code>
+        <div className="text-xs text-muted-foreground border-t border-border pt-3 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-destructive" />
+          {data.explanation}
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "errorfix") {
+    return (
+      <div className="space-y-4">
+        <div className="border border-destructive/30 rounded-lg p-4 bg-destructive/5">
+          <div className="flex items-center gap-2 mb-2">
+            <Bug className="w-4 h-4 text-destructive" />
+            <span className="text-xs font-mono text-destructive">Error Analysis</span>
           </div>
+          <p className="text-sm text-muted-foreground">{data.explanation}</p>
+        </div>
+        {data.fixes.length > 0 && (
           <div className="border border-border rounded-lg p-4 bg-background/50">
-            <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-3">Root Cause</span>
-            <p className="text-sm text-muted-foreground mb-4">
-              The package name is <code className="text-primary font-mono">scikit-learn</code>, not <code className="text-destructive font-mono">sklearn</code>. The import name differs from the pip package name.
-            </p>
-            <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-2">Fix</span>
-            <div className="code-block p-3 text-xs space-y-1">
-              <div className="text-muted-foreground">pip install scikit-learn</div>
-            </div>
+            <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-3">Fixes</span>
+            <ul className="text-sm text-muted-foreground space-y-2">
+              {data.fixes.map((fix, i) => <li key={i}>• {fix}</li>)}
+            </ul>
           </div>
+        )}
+        {data.code_snippet && (
           <div className="border border-primary/20 rounded-lg p-4 bg-primary/5">
-            <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-2">Verified Setup</span>
-            <div className="code-block p-3 text-xs space-y-1">
-              <div><span className="text-muted-foreground">pip install scikit-learn</span></div>
-              <div><span className="text-muted-foreground">python -c "import sklearn; print(sklearn.__version__)"</span></div>
-              <div><span className="text-primary"># → 1.3.2</span></div>
+            <span className="text-xs font-mono uppercase tracking-wider text-primary block mb-2">Code Example</span>
+            <div className="code-block p-3 text-xs whitespace-pre-wrap">
+              {data.code_snippet}
             </div>
           </div>
-        </div>
-      ),
-    },
-  };
-  return { mode, query, content: responses[mode].default };
+        )}
+        {data.source_url && (
+          <div className="text-xs text-muted-foreground border-t border-border pt-3">
+            Source: <a href={data.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{data.source_url}</a>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return <div className="text-sm text-muted-foreground">{data.processed_content}</div>;
 };
 
 const modes: { key: Mode; label: string; icon: typeof Zap; desc: string }[] = [
@@ -137,18 +194,24 @@ const modes: { key: Mode; label: string; icon: typeof Zap; desc: string }[] = [
 const DemoSection = () => {
   const [activeMode, setActiveMode] = useState<Mode>("recommend");
   const [query, setQuery] = useState(presetQueries.recommend[0]);
-  const [response, setResponse] = useState<SimulatedResponse | null>(null);
+  const [response, setResponse] = useState<BackendResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
     setIsLoading(true);
     setResponse(null);
-    setTimeout(() => {
-      setResponse(simulateResponse(activeMode, query));
+    setError(null);
+    try {
+      const data = await callBackend(query, activeMode);
+      setResponse(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch response");
+    } finally {
       setIsLoading(false);
-    }, 800);
+    }
   };
 
   const switchMode = (mode: Mode) => {
@@ -226,13 +289,18 @@ const DemoSection = () => {
               </div>
             </div>
           )}
-          {!isLoading && !response && (
+          {!isLoading && !response && !error && (
             <div className="flex items-center justify-center h-[200px] text-muted-foreground text-sm">
               Hit <span className="font-mono text-primary mx-1">Run</span> to see the response
             </div>
           )}
+          {!isLoading && error && (
+            <div className="flex items-center justify-center h-[200px] text-destructive text-sm">
+              {error}
+            </div>
+          )}
           {!isLoading && response && (
-            <div className="animate-fade-in">{response.content}</div>
+            <div className="animate-fade-in">{renderBackendResponse(activeMode, response)}</div>
           )}
         </div>
       </div>
