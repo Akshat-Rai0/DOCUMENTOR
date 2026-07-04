@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Generator, Optional
 
 import httpx
@@ -12,6 +14,62 @@ from parser import _detect_injection
 logger = logging.getLogger(__name__)
 
 _ALLOWED_INTENTS = {"function_search", "error_fix", "concept_explain"}
+
+# Issue #12 — query failure / low-confidence logging. One JSON line per
+# query, appended to a local file. This is deliberately append-only and
+# best-effort: a logging failure should never break the actual answer path,
+# so every write is wrapped and swallowed on error.
+_LOW_CONFIDENCE_THRESHOLD = 0.4
+
+try:
+    from vector_store import DATA_DIR
+    _QUERY_LOG_PATH = Path(DATA_DIR) / "query_log.jsonl"
+except Exception:
+    # Fallback if vector_store isn't importable in this context (e.g. tests) —
+    # log next to this file instead of failing query logging entirely.
+    _QUERY_LOG_PATH = Path(__file__).resolve().parent / "query_log.jsonl"
+
+
+def _log_query_result(
+    *,
+    query: str,
+    intent: str,
+    confidence: float,
+    fallback_used: bool,
+    chunk_count: int,
+    library: Optional[str] = None,
+) -> None:
+    """
+    Append one JSON line describing how a query was answered. This is what
+    feeds the eval-harness / retrieval-quality work later — without this,
+    there is no record of which queries got low-confidence or fallback
+    answers, so failure patterns are invisible until someone manually
+    stumbles onto a bad response.
+    """
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "query": query,
+        "intent": intent,
+        "library": library,
+        "confidence": confidence,
+        "low_confidence": confidence < _LOW_CONFIDENCE_THRESHOLD,
+        "fallback_used": fallback_used,
+        "chunk_count": chunk_count,
+    }
+    try:
+        _QUERY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _QUERY_LOG_PATH.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        # Never let logging failures break the actual query path.
+        logger.warning("Failed to write query log entry", exc_info=True)
+
+    if entry["low_confidence"] or fallback_used:
+        logger.warning(
+            f"low_confidence_or_fallback query={query!r} intent={intent} "
+            f"confidence={confidence} fallback_used={fallback_used} "
+            f"chunk_count={chunk_count} library={library}"
+        )
 
 
 def _local_model_name() -> str:
@@ -240,9 +298,15 @@ def generate_grounded_answer(
     query: str,
     intent: str,
     chunks: list[dict[str, Any]],
+    library: Optional[str] = None,
 ) -> dict[str, Any]:
     if not chunks:
-        return _fallback_answer(intent=intent, chunks=chunks)
+        result = _fallback_answer(intent=intent, chunks=chunks)
+        _log_query_result(
+            query=query, intent=intent, confidence=result["confidence"],
+            fallback_used=True, chunk_count=0, library=library,
+        )
+        return result
 
     user_prompt = build_user_prompt(intent=intent, query=query, chunks=chunks)
 
@@ -254,9 +318,19 @@ def generate_grounded_answer(
             json_mode=True,
         )
         parsed = _extract_json_object(text)
-        return _normalize_answer(parsed, chunks=chunks)
+        result = _normalize_answer(parsed, chunks=chunks)
+        _log_query_result(
+            query=query, intent=intent, confidence=result["confidence"],
+            fallback_used=False, chunk_count=len(chunks), library=library,
+        )
+        return result
     except Exception:
-        return _fallback_answer(intent=intent, chunks=chunks)
+        result = _fallback_answer(intent=intent, chunks=chunks)
+        _log_query_result(
+            query=query, intent=intent, confidence=result["confidence"],
+            fallback_used=True, chunk_count=len(chunks), library=library,
+        )
+        return result
 
 
 def _sanitize_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -275,7 +349,7 @@ def _sanitize_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 f"Injection pattern detected in chunk from {source_url}. "
                 f"Chunk text preview: {text[:200]}..."
             )
-    return safe_chunks 
+    return safe_chunks
 
 
 
@@ -283,16 +357,22 @@ def generate_grounded_answer_stream(
     query: str,
     intent: str,
     chunks: list[dict[str, Any]],
+    library: Optional[str] = None,
 ) -> Generator[str, None, None]:
     """Streaming version — yields raw tokens from the LLM."""
     safe_chunks = _sanitize_chunks(chunks)
     if not safe_chunks:
         fallback = _fallback_answer(intent=intent, chunks=chunks)
+        _log_query_result(
+            query=query, intent=intent, confidence=fallback["confidence"],
+            fallback_used=True, chunk_count=0, library=library,
+        )
         yield json.dumps(fallback)
         return
 
     user_prompt = build_user_prompt(intent=intent, query=query, chunks=safe_chunks)
 
+    accumulated = ""
     try:
         for token in _stream_local_model(
             system_prompt=SYSTEM_GROUNDING_PROMPT,
@@ -300,7 +380,29 @@ def generate_grounded_answer_stream(
             max_tokens=1000,
             json_mode=True,
         ):
+            accumulated += token
             yield token
+
+        # Streamed successfully — parse what we accumulated to log the
+        # final confidence, same as the non-streaming path does. This is
+        # best-effort: if parsing fails here we still log a fallback-shaped
+        # entry rather than silently skipping the log for this query.
+        try:
+            parsed = _extract_json_object(accumulated)
+            result = _normalize_answer(parsed, chunks=safe_chunks)
+            _log_query_result(
+                query=query, intent=intent, confidence=result["confidence"],
+                fallback_used=False, chunk_count=len(safe_chunks), library=library,
+            )
+        except Exception:
+            _log_query_result(
+                query=query, intent=intent, confidence=0.0,
+                fallback_used=True, chunk_count=len(safe_chunks), library=library,
+            )
     except Exception:
         fallback = _fallback_answer(intent=intent, chunks=chunks)
+        _log_query_result(
+            query=query, intent=intent, confidence=fallback["confidence"],
+            fallback_used=True, chunk_count=len(chunks), library=library,
+        )
         yield json.dumps(fallback)
