@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Zap, AlertTriangle, Bug, Send, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
- 
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
 const presetQueries: Record<string, string[]> = {
   recommend: ["How do I normalize data?", "Read a CSV file in Python", "Sort a list of dictionaries"],
   antipattern: ["When should I avoid pandas apply?", "Is iterrows() efficient?", "Should I use global variables?"],
@@ -46,7 +48,7 @@ interface SimulatedResponse {
 }
  
 const callBackend = async (query: string, mode: Mode): Promise<BackendResponse> => {
-  const response = await fetch('http://localhost:8000/api/process', {
+  const response = await fetch(`${API_BASE_URL}/api/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
