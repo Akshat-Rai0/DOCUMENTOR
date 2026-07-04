@@ -1,13 +1,15 @@
 import json
 import pickle
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 from url_utils import extract_library_name
-from vector_store import DATA_DIR, build_collection_name, chroma_client, get_embedding_model
+from vector_store import DATA_DIR, build_collection_name, chroma_client, model as embedding_model
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -56,7 +58,7 @@ def _semantic_search(query: str, collection_name: str, top_k: int) -> list[dict[
     except Exception:
         return []
 
-    query_embedding = get_embedding_model().encode([query])[0].tolist()
+    query_embedding = embedding_model.encode([query])[0].tolist()
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=top_k,
@@ -89,6 +91,7 @@ def _semantic_search(query: str, collection_name: str, top_k: int) -> list[dict[
 
 
 python_bm25_cache: dict[str, dict] = {}
+
 
 def _bm25_search(query: str, collection_name: str, top_k: int) -> list[dict[str, Any]]:
     if collection_name not in python_bm25_cache:
@@ -130,6 +133,8 @@ def _bm25_search(query: str, collection_name: str, top_k: int) -> list[dict[str,
         )
 
     return ranked
+
+
 def reciprocal_rank_fusion(
     semantic_results: list[dict[str, Any]],
     bm25_results: list[dict[str, Any]],
@@ -159,6 +164,54 @@ def reciprocal_rank_fusion(
     return fused[:top_k]
 
 
+# ---------------------------------------------------------------------------
+# Issue #14 — LRU cache on (query, library) retrieval results
+# ---------------------------------------------------------------------------
+#
+# Keyed on the *resolved* library (post _infer_library_from_source_url), not
+# on the raw source_url param, since source_url=None resolves differently
+# depending on what's most recently indexed. Also keyed on the retrieval
+# knobs (top_k / rrf_k) so a call with different params never returns a
+# cached result meant for different params.
+#
+# A manual OrderedDict is used instead of functools.lru_cache because we
+# need to selectively invalidate all entries for a single library when it
+# gets re-indexed (see invalidate_retrieval_cache below) — lru_cache only
+# supports clearing everything at once.
+
+_RETRIEVAL_CACHE_MAXSIZE = 256
+_retrieval_cache: "OrderedDict[tuple, dict[str, Any]]" = OrderedDict()
+_retrieval_cache_lock = Lock()
+
+
+def _retrieval_cache_key(
+    query: str,
+    library: str,
+    semantic_top_k: int,
+    bm25_top_k: int,
+    fused_top_k: int,
+    rrf_k: int,
+) -> tuple:
+    return (query, library, semantic_top_k, bm25_top_k, fused_top_k, rrf_k)
+
+
+def invalidate_retrieval_cache(library: Optional[str] = None) -> None:
+    """
+    Drop cached retrieval results. Call this whenever a library is
+    re-indexed (vector_store.process_and_store) so stale results for that
+    library can't be served after fresh data is written.
+
+    If library is None, clears the entire cache.
+    """
+    with _retrieval_cache_lock:
+        if library is None:
+            _retrieval_cache.clear()
+            return
+        stale_keys = [k for k in _retrieval_cache if k[1] == library]
+        for k in stale_keys:
+            del _retrieval_cache[k]
+
+
 def hybrid_retrieve(
     query: str,
     source_url: Optional[str] = None,
@@ -170,6 +223,15 @@ def hybrid_retrieve(
     library = _infer_library_from_source_url(source_url)
     if not library:
         raise ValueError("No indexed library found. Crawl documentation first or pass source_url.")
+
+    cache_key = _retrieval_cache_key(
+        query, library, semantic_top_k, bm25_top_k, fused_top_k, rrf_k
+    )
+    with _retrieval_cache_lock:
+        cached = _retrieval_cache.get(cache_key)
+        if cached is not None:
+            _retrieval_cache.move_to_end(cache_key)  # mark as recently used
+            return cached
 
     collection_name = build_collection_name(library)
 
@@ -210,7 +272,7 @@ def hybrid_retrieve(
         top_k=fused_top_k,
     )
 
-    return {
+    result = {
         "library": library,
         "collection_name": collection_name,
         "semantic_results": all_semantic[:semantic_top_k],
@@ -218,3 +280,11 @@ def hybrid_retrieve(
         "fused_results": fused_results,
         "query_variants": query_variants,
     }
+
+    with _retrieval_cache_lock:
+        _retrieval_cache[cache_key] = result
+        _retrieval_cache.move_to_end(cache_key)
+        while len(_retrieval_cache) > _RETRIEVAL_CACHE_MAXSIZE:
+            _retrieval_cache.popitem(last=False)  # evict least-recently-used
+
+    return result

@@ -42,10 +42,10 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
-    return SentenceTransformer("all-MiniLM-L6-v2")  
+    return SentenceTransformer("all-MiniLM-L6-v2")  # match whatever model name you currently use
 
 
-# write lock to prevent race conditions on delete+recreate
+# Issue #8 — write lock to prevent race conditions on delete+recreate
 _chroma_write_lock = threading.Lock()
 
 
@@ -80,7 +80,7 @@ def check_cache(url: str, library: str, version: Optional[str] = None) -> bool:
     return False
 
 
-
+# -- Issue #6 — Sliding-window sub-chunking -----------------------------------
 
 def _sliding_window_chunks(
     text: str,
@@ -269,8 +269,9 @@ def process_and_store(
         # the freshly-swapped file instead of serving a stale in-memory copy
         # (see retriever.py's python_bm25_cache).
         try:
-            from retriever import python_bm25_cache
+            from retriever import python_bm25_cache, invalidate_retrieval_cache
             python_bm25_cache.pop(col_name, None)
+            invalidate_retrieval_cache(library=library)
         except Exception:
             pass
 
