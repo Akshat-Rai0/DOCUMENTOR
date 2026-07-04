@@ -71,6 +71,10 @@ def check_cache(url: str, library: str, version: Optional[str] = None) -> bool:
         if manifest.get("url") != url:
             return False
 
+        from schemas.function import CURRENT_SCHEMA_VERSION
+        if manifest.get("schema_version") != CURRENT_SCHEMA_VERSION:
+            return False  # old schema — force re-index rather than serve incompatible data
+
         crawl_date = datetime.fromisoformat(manifest.get("crawl_date", ""))
         if datetime.now() - crawl_date < timedelta(days=7):
             return True
@@ -279,6 +283,7 @@ def process_and_store(
     #    signal for check_cache(). If anything above raised, execution never
     #    reaches here, so a stale manifest can never point at a broken or
     #    partially-written index.
+    from schemas.function import CURRENT_SCHEMA_VERSION
     manifest = {
         "url": url,
         "crawl_date": datetime.now().isoformat(),
@@ -287,6 +292,7 @@ def process_and_store(
         "library": library,
         "function_count": len(functions),
         "chunk_count": len(chunks),
+        "schema_version": CURRENT_SCHEMA_VERSION,
     }
     manifest_path = os.path.join(col_dir, "manifest.json")
     with open(manifest_path, "w") as f:
