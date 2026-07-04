@@ -46,6 +46,24 @@ _JUNK_NAMES = {
     "usage", "overview", "see", "also",
 }
 
+# Separate, much narrower junk list used when filtering PARAMETER names
+# (as opposed to function/class names). _JUNK_NAMES above deliberately
+# excludes words like "data", "value", "type", "result", "response",
+# "request", "callback", "handler", "default" because those are common,
+# completely legitimate names for a top-level function/class — but they
+# are ALSO extremely common, legitimate PARAMETER names (e.g.
+# `DataFrame.from_dict(data=...)`, `requests.get(url, params=...)`).
+# Reusing _JUNK_NAMES for parameter filtering was silently dropping real
+# parameters like "data" from every extracted params list. Only words that
+# are junk in *any* context (scraping/nav artifacts, never real param
+# names) belong here.
+_PARAM_JUNK_NAMES = {
+    "directly", "decorator", "wrapper", "inner", "outer", "helper",
+    "utils", "base", "mixin", "abstract", "bases", "source", "note",
+    "read", "more", "about", "skip", "content", "tests", "test",
+    "notes", "usage", "overview", "see", "also",
+}
+
 # English words that can appear as "params" due to text bleeding
 _STOPWORDS = {
     "in", "the", "for", "and", "or", "not", "is", "to", "of", "at",
@@ -144,8 +162,22 @@ def clean_page(plain_text: str) -> tuple[str, list[str]]:
             continue
 
         if _NOISE_LINE_RE.match(line.strip()):
+            # Leave a blank-line gap instead of silently dropping the line.
+            # Without this, text on either side of a removed noise line
+            # (e.g. a stray "¶" anchor between two unrelated paragraphs)
+            # becomes textually adjacent in `cleaned`, and downstream
+            # description extraction stitches the two fragments together
+            # as if they were one continuous sentence (Issue: garbled
+            # descriptions like "do. You can read more in groupby
+            # operations in method is used to..." — two unrelated
+            # sentences fused because the separating line was removed
+            # with no gap left behind).
+            if cleaned and cleaned[-1] != "":
+                cleaned.append("")
             continue
         if _PUNCT_LINE_RE.match(line):
+            if cleaned and cleaned[-1] != "":
+                cleaned.append("")
             continue
 
         cleaned.append(line)
@@ -240,7 +272,7 @@ def _extract_params_from_table(text_window: str) -> list[str]:
         if (line
                 and re.match(r"^[a-zA-Z_]\w*$", line)
                 and line.lower() not in _STOPWORDS
-                and line.lower() not in _JUNK_NAMES
+                and line.lower() not in _PARAM_JUNK_NAMES
                 and line not in ("PARAMETER", "DESCRIPTION", "TYPE",
                                  "DEFAULT", "Note", "None", "True", "False")):
             params.append(line)
@@ -263,7 +295,7 @@ def _extract_params_from_signature(sig_text: str) -> list[str]:
                 and re.match(r"^[a-zA-Z_]\w*$", name)
                 and name not in ("self", "cls")
                 and name.lower() not in _STOPWORDS
-                and name.lower() not in _JUNK_NAMES):
+                and name.lower() not in _PARAM_JUNK_NAMES):
             params.append(name)
     return params
 
@@ -289,7 +321,7 @@ def _extract_numpy_params(text_window: str) -> list[str]:
         if pm:
             name = pm.group("name")
             if (name.lower() not in _STOPWORDS
-                    and name.lower() not in _JUNK_NAMES
+                    and name.lower() not in _PARAM_JUNK_NAMES
                     and name not in ("self", "cls")):
                 params.append(name)
     return params
@@ -300,7 +332,7 @@ def _extract_jsdoc_params(text_window: str) -> list[str]:
     params = []
     for m in _JSDOC_PARAM_RE.finditer(text_window[:2000]):
         name = m.group("name")
-        if name.lower() not in _STOPWORDS and name.lower() not in _JUNK_NAMES:
+        if name.lower() not in _STOPWORDS and name.lower() not in _PARAM_JUNK_NAMES:
             params.append(name)
     return params
 
@@ -323,9 +355,6 @@ def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str
         re.IGNORECASE,
     )
     punct_only = re.compile(r'^[\(\)\[\]{}\\.,=\*"\'\\s:¶|]{1,8}$')
-    # Matches a bare dotted-name heading line, same shape _DOTTED_NAME_RE
-    # looks for — this is what signals "we've reached the next entry."
-    next_heading_re = re.compile(r"^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+\s*¶?\s*$")
 
     snippet = text_window[:max_chars]
     prose = []
@@ -335,7 +364,7 @@ def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str
             if prose:
                 break
             continue
-        if next_heading_re.match(s):
+        if _NEXT_HEADING_RE.match(s):
             break
         if skip_re.match(s):
             continue
@@ -361,6 +390,40 @@ def _nearest_code_block(pos: int, text: str, code_blocks: list[str]) -> Optional
     if preceding < len(code_blocks):
         return code_blocks[preceding]
     return None
+
+
+# Matches a bare dotted-name heading line (same shape _DOTTED_NAME_RE looks
+# for) — this is what signals "we've reached the next entry" when slicing
+# a window of text for a single item's params/description.
+_NEXT_HEADING_RE = re.compile(r"^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+\s*¶?\s*$", re.MULTILINE)
+
+
+def _bounded_window(text: str, start: int, max_chars: int = 2000) -> str:
+    """
+    Slice a window starting at `start`, truncated at max_chars OR at the
+    next dotted-name heading line, whichever comes first.
+
+    Without this, params/description extraction for one entry can bleed
+    into content that actually belongs to the NEXT entry on an index/table
+    page (e.g. pandas' DataFrame reference page listing from_dict,
+    from_records, read_csv, read_table, read_clipboard back-to-back) —
+    the same root cause that produced garbled/misattributed descriptions
+    before _extract_description was fixed to stop at the next heading.
+    Params extraction had the same unbounded-window bug and is fixed here
+    the same way.
+
+    Skips past the window's own first line before searching, since window
+    typically starts at (or just before) the current entry's own heading —
+    searching from position 0 would immediately "match" that and truncate
+    the window to nothing.
+    """
+    window = text[start:start + max_chars]
+    first_newline = window.find("\n")
+    search_start = first_newline + 1 if first_newline != -1 else len(window)
+    next_match = _NEXT_HEADING_RE.search(window, search_start)
+    if next_match:
+        return window[:next_match.start()]
+    return window
 
 
 def extract_items(
@@ -394,7 +457,7 @@ def extract_items(
         else:
             etype = "method"
 
-        window = plain_text[m.start(): m.start() + 2000]
+        window = _bounded_window(plain_text, m.start())
 
         params = _extract_params_from_table(window)
         if not params:
@@ -440,7 +503,7 @@ def extract_items(
                     and re.match(r"^[a-zA-Z_]\w*$", name)
                     and name not in ("self", "cls")
                     and name.lower() not in _STOPWORDS
-                    and name.lower() not in _JUNK_NAMES):
+                    and name.lower() not in _PARAM_JUNK_NAMES):
                 params.append(name)
 
         desc = _extract_description(plain_text[m.end():])
@@ -470,7 +533,7 @@ def extract_items(
         raw_sig = m.group("params") or ""
         params = _extract_params_from_signature(raw_sig) if raw_sig else []
         if not params:
-            window = plain_text[m.start(): m.start() + 2000]
+            window = _bounded_window(plain_text, m.start())
             params = _extract_numpy_params(window)
 
         parts = raw_name.split(".")
@@ -506,7 +569,7 @@ def extract_items(
         raw_sig = m.group("params") or ""
         params = _extract_params_from_signature(raw_sig) if raw_sig else []
         if not params:
-            window = plain_text[m.start(): m.start() + 2000]
+            window = _bounded_window(plain_text, m.start())
             params = _extract_jsdoc_params(window)
 
         desc = _extract_description(plain_text[m.end():])
