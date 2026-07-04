@@ -18,8 +18,16 @@ _TRACEBACK_RE = re.compile(
     r"(traceback \(most recent call last\)|\bfile\s+\".+?\",\s+line\s+\d+|\bexception\b|\berror:)",
     re.IGNORECASE,
 )
+# Issue: previously included "how", "what", "when" here. Those are generic
+# interrogatives used by every intent — "How do I read a CSV" is
+# function_search, "What's the difference between loc and iloc" is
+# concept_explain, error queries can start with "what" too. Matching on
+# them unconditionally short-circuited almost every natural-language query
+# straight to concept_explain before _looks_like_function_query or the LLM
+# disambiguator ever got a chance to run. Only genuinely concept-specific
+# lead-in words remain.
 _CONCEPT_PREFIX_RE = re.compile(
-    r"^\s*(how|why|what|when|explain|difference|compare|concept|meaning)\b",
+    r"^\s*(why|explain|difference|compare|concept|meaning)\b",
     re.IGNORECASE,
 )
 
