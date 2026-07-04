@@ -1,22 +1,22 @@
 import { useState } from "react";
 import { Zap, AlertTriangle, Bug, Send, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
+ 
 const presetQueries: Record<string, string[]> = {
   recommend: ["How do I normalize data?", "Read a CSV file in Python", "Sort a list of dictionaries"],
   antipattern: ["When should I avoid pandas apply?", "Is iterrows() efficient?", "Should I use global variables?"],
   errorfix: ["ModuleNotFoundError: No module named 'sklearn'", "KeyError: 'column_name'", "TypeError: unsupported operand type(s)"],
 };
-
+ 
 type Mode = "recommend" | "antipattern" | "errorfix";
-
+ 
 // Map frontend modes to backend intents
 const modeToIntent: Record<Mode, string> = {
   recommend: "function_search",
   antipattern: "concept_explain",
   errorfix: "error_fix",
 };
-
+ 
 interface BackendResponse {
   status: string;
   intent: string;
@@ -38,13 +38,13 @@ interface BackendResponse {
     rank: number;
   }>;
 }
-
+ 
 interface SimulatedResponse {
   mode: Mode;
   query: string;
   content: React.ReactNode;
 }
-
+ 
 const callBackend = async (query: string, mode: Mode): Promise<BackendResponse> => {
   const response = await fetch('http://localhost:8000/api/process', {
     method: 'POST',
@@ -55,15 +55,33 @@ const callBackend = async (query: string, mode: Mode): Promise<BackendResponse> 
       use_reranker: true,
     }),
   });
-  
+ 
   if (!response.ok) {
-  const body = await response.json().catch(() => null);
-  throw new Error(body?.detail || `Backend error: ${response.statusText}`);
-}
-
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `Backend error: ${response.statusText}`);
+  }
+ 
   return response.json();
 };
-
+ 
+const ConfidenceBadge = ({ confidence }: { confidence: number }) => {
+  const pct = Math.round(confidence * 100);
+  const tier =
+    confidence >= 0.7 ? "high" : confidence >= 0.4 ? "medium" : "low";
+ 
+  const styles: Record<string, string> = {
+    high: "bg-emerald-500/10 text-emerald-500",
+    medium: "bg-amber-500/10 text-amber-500",
+    low: "bg-destructive/10 text-destructive",
+  };
+ 
+  return (
+    <span className={`text-xs font-mono px-2 py-0.5 rounded-full ${styles[tier]}`}>
+      Confidence: {pct}%
+    </span>
+  );
+};
+ 
 const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNode => {
   if (mode === "recommend") {
     return (
@@ -71,7 +89,7 @@ const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNo
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-primary/10 text-primary">Recommended</span>
           <span className="text-xs text-muted-foreground">{data.recommended_functions.length} candidates found</span>
-          <span className="text-xs text-muted-foreground">Confidence: {(data.confidence * 100).toFixed(0)}%</span>
+          <ConfidenceBadge confidence={data.confidence} />
         </div>
         <div className="space-y-3">
           {data.recommended_functions.map((func, idx) => (
@@ -105,13 +123,14 @@ const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNo
       </div>
     );
   }
-
+ 
   if (mode === "antipattern") {
     return (
       <div className="space-y-4">
         <div className="border border-border rounded-lg p-4 bg-background/50">
           <div className="flex items-center gap-2 mb-3">
             <code className="text-primary font-mono text-sm font-semibold">{data.recommended_functions[0] || "Function"}</code>
+            <ConfidenceBadge confidence={data.confidence} />
           </div>
           {(data.use_when.length > 0 || data.avoid_when.length > 0) && (
             <div className="grid grid-cols-2 gap-4 mb-4">
@@ -146,7 +165,7 @@ const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNo
       </div>
     );
   }
-
+ 
   if (mode === "errorfix") {
     return (
       <div className="space-y-4">
@@ -154,6 +173,7 @@ const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNo
           <div className="flex items-center gap-2 mb-2">
             <Bug className="w-4 h-4 text-destructive" />
             <span className="text-xs font-mono text-destructive">Error Analysis</span>
+            <ConfidenceBadge confidence={data.confidence} />
           </div>
           <p className="text-sm text-muted-foreground">{data.explanation}</p>
         </div>
@@ -181,23 +201,23 @@ const renderBackendResponse = (mode: Mode, data: BackendResponse): React.ReactNo
       </div>
     );
   }
-
+ 
   return <div className="text-sm text-muted-foreground">{data.processed_content}</div>;
 };
-
+ 
 const modes: { key: Mode; label: string; icon: typeof Zap; desc: string }[] = [
   { key: "recommend", label: "Recommend", icon: Zap, desc: "Function recommendations" },
   { key: "antipattern", label: "Anti-Pattern", icon: AlertTriangle, desc: "When NOT to use" },
   { key: "errorfix", label: "Error Fix", icon: Bug, desc: "Error → root cause → fix" },
 ];
-
+ 
 const DemoSection = () => {
   const [activeMode, setActiveMode] = useState<Mode>("recommend");
   const [query, setQuery] = useState(presetQueries.recommend[0]);
   const [response, setResponse] = useState<BackendResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+ 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -213,13 +233,13 @@ const DemoSection = () => {
       setIsLoading(false);
     }
   };
-
+ 
   const switchMode = (mode: Mode) => {
     setActiveMode(mode);
     setQuery(presetQueries[mode][0]);
     setResponse(null);
   };
-
+ 
   return (
     <section className="py-24 px-6 bg-card/40">
       <div className="container max-w-4xl">
@@ -228,7 +248,7 @@ const DemoSection = () => {
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Try It Yourself</h2>
           <p className="text-muted-foreground max-w-xl mx-auto">Pick a mode, type a query (or use a preset), and see how the system responds.</p>
         </div>
-
+ 
         {/* Mode tabs */}
         <div className="flex gap-2 mb-6 justify-center flex-wrap">
           {modes.map((m) => (
@@ -246,7 +266,7 @@ const DemoSection = () => {
             </button>
           ))}
         </div>
-
+ 
         {/* Preset chips */}
         <div className="flex gap-2 mb-4 flex-wrap justify-center">
           {presetQueries[activeMode].map((q) => (
@@ -261,7 +281,7 @@ const DemoSection = () => {
             </button>
           ))}
         </div>
-
+ 
         {/* Input */}
         <form onSubmit={handleSubmit} className="mb-6">
           <div className="surface-glass rounded-xl p-1.5 flex items-center gap-2">
@@ -278,7 +298,7 @@ const DemoSection = () => {
             </Button>
           </div>
         </form>
-
+ 
         {/* Response area */}
         <div className="surface-glass rounded-xl p-6 min-h-[200px]">
           {isLoading && (
@@ -307,5 +327,5 @@ const DemoSection = () => {
     </section>
   );
 };
-
+ 
 export default DemoSection;
