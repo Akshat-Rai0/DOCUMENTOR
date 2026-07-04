@@ -35,7 +35,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://yourdeployeddomain.com"], #"https://yourdeployeddomain.com"
+    allow_origins=["http://localhost:3000", "http://localhost:8080", "https://yourdeployeddomain.com"], #"https://yourdeployeddomain.com"
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],

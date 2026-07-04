@@ -9,7 +9,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from url_utils import extract_library_name
-from vector_store import DATA_DIR, build_collection_name, chroma_client, model as embedding_model
+from vector_store import DATA_DIR, build_collection_name, chroma_client, get_embedding_model
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -58,6 +58,7 @@ def _semantic_search(query: str, collection_name: str, top_k: int) -> list[dict[
     except Exception:
         return []
 
+    embedding_model = get_embedding_model()
     query_embedding = embedding_model.encode([query])[0].tolist()
     results = collection.query(
         query_embeddings=[query_embedding],

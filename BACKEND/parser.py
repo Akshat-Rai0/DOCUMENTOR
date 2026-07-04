@@ -1,6 +1,19 @@
 """
 parser.py — Phase 2 core pipeline (v6)
 
+v6 changes:
+  - Issue #8: Unified dedup key across all extraction patterns (previously
+    each pattern used a different `seen` key format — bare name, prefixed
+    name, or both inconsistently — causing cross-pattern duplicate entries
+    for the same function/class when multiple patterns matched the same
+    page. All patterns now use `_seen_key(library, name)` consistently,
+    and `parse_pages()` reuses the same helper for its cross-page dedup.
+
+v5 changes:
+  - Issue #3: Uses shared extract_library_name from url_utils
+  - Issue #5: Adds adapters for Sphinx, Read the Docs, JSDoc, and NumPy-style
+    docstrings alongside the existing MkDocs/FastAPI patterns.
+
 Strategy:
   1. clean_page()    — strip nav/sponsor noise from the plain text
   2. extract_items() — match dotted API names using plain-text patterns
@@ -29,6 +42,8 @@ _JUNK_NAMES = {
     "response", "request", "handler", "callback", "wrapper", "inner",
     "outer", "helper", "utils", "base", "mixin", "abstract", "bases",
     "source", "note", "read", "more", "about", "skip", "content",
+    "tests", "test", "notes", "params", "parameters", "examples",
+    "usage", "overview", "see", "also",
 }
 
 # English words that can appear as "params" due to text bleeding
@@ -54,11 +69,14 @@ def _is_valid_name(name: str) -> bool:
         return False
     if name.lower() in _JUNK_NAMES:
         return False
-    if "." not in name and name.islower() and len(name) < 5:
+    if "." not in name and name.islower() and len(name) < 6:
         return False
     return True
 
 
+# ---------------------------------------------------------------------------
+# Dedup key — Issue #8
+# ---------------------------------------------------------------------------
 
 def _seen_key(library: str, raw_name: str) -> str:
     """
@@ -288,7 +306,15 @@ def _extract_jsdoc_params(text_window: str) -> list[str]:
 
 
 def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str]:
-    """Find the first real prose paragraph after a function heading."""
+    """Find the first real prose paragraph after a function heading.
+
+    Stops at the next dotted-name heading line (e.g. "read_csv¶" or
+    "DataFrame.to_csv") — without this, scanning forward on an index/table
+    page that lists several related functions together (e.g. pandas'
+    DataFrame reference page listing from_dict, from_records, read_csv,
+    read_table, read_clipboard as a block) walks straight into the NEXT
+    entry's description and attaches it to the wrong function name.
+    """
     skip_re = re.compile(
         r"^(¶|PARAMETER|DESCRIPTION|TYPE:|DEFAULT:|Example|SOURCE|"
         r"Bases:|Read more|Note:|Warning:|__CODE_BLOCK__|"
@@ -297,6 +323,9 @@ def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str
         re.IGNORECASE,
     )
     punct_only = re.compile(r'^[\(\)\[\]{}\\.,=\*"\'\\s:¶|]{1,8}$')
+    # Matches a bare dotted-name heading line, same shape _DOTTED_NAME_RE
+    # looks for — this is what signals "we've reached the next entry."
+    next_heading_re = re.compile(r"^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+\s*¶?\s*$")
 
     snippet = text_window[:max_chars]
     prose = []
@@ -306,6 +335,8 @@ def _extract_description(text_window: str, max_chars: int = 800) -> Optional[str
             if prose:
                 break
             continue
+        if next_heading_re.match(s):
+            break
         if skip_re.match(s):
             continue
         if punct_only.match(s):
@@ -491,7 +522,7 @@ def extract_items(
             "source_url": source_url,
         })
 
-
+    # --- Issue #5 — RTD heading pattern: name(params) on its own line ---
     for m in _RTD_HEADING_RE.finditer(plain_text):
         raw_name = m.group("n")
         if not _is_valid_name(raw_name):
