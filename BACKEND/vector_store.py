@@ -38,13 +38,14 @@ except Exception as e:
     ) from e
 
 from functools import lru_cache
-from sentence_transformers import SentenceTransformer
+
 
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
-    return SentenceTransformer("all-MiniLM-L6-v2")  # match whatever model name you currently use
+    return SentenceTransformer("all-MiniLM-L6-v2")  
 
-# Issue #8 — write lock to prevent race conditions on delete+recreate
+
+# write lock to prevent race conditions on delete+recreate
 _chroma_write_lock = threading.Lock()
 
 
@@ -79,7 +80,7 @@ def check_cache(url: str, library: str, version: Optional[str] = None) -> bool:
     return False
 
 
-# -- Issue #6 — Sliding-window sub-chunking -----------------------------------
+
 
 def _sliding_window_chunks(
     text: str,
@@ -174,31 +175,18 @@ def process_and_store(
     chunks, metadatas, ids = _build_sub_chunks(functions, col_name)
 
     # 2. Generate embeddings
-    embeddings = get_embedding_model.encode(chunks, show_progress_bar=True).tolist()
+    embeddings = get_embedding_model().encode(chunks, show_progress_bar=True).tolist()
 
-    # 3. Store in ChromaDB (Issue #8 — use write lock)
-    with _chroma_write_lock:
-        try:
-            chroma_client.delete_collection(name=col_name)
-        except (ValueError, Exception):
-            pass
-
-        collection = chroma_client.get_or_create_collection(name=col_name)
-
-    for i in range(0, len(ids), 5000):
-        collection.add(
-            ids=ids[i:i+5000],
-            embeddings=embeddings[i:i+5000],
-            metadatas=metadatas[i:i+5000],
-            documents=chunks[i:i+5000]
-        )
-
-    # 4. Build BM25 index alongside
+    # 3. Build the BM25 index and pickle it to a TEMP file first (Issue #10 —
+    #    Chroma/BM25 drift). This is the cheap, easily-retryable work, so we
+    #    do it before touching Chroma. If it fails, nothing live has been
+    #    touched yet.
     tokenized_chunks = [chunk.lower().split() for chunk in chunks]
     bm25 = BM25Okapi(tokenized_chunks)
 
     bm25_path = os.path.join(col_dir, "bm25_index.pkl")
-    with open(bm25_path, "wb") as f:
+    bm25_tmp_path = bm25_path + ".tmp"
+    with open(bm25_tmp_path, "wb") as f:
         pickle.dump(
             {
                 "bm25": bm25,
@@ -209,7 +197,87 @@ def process_and_store(
             f
         )
 
-    # 5. Version caching
+    # 4. Store in ChromaDB under a staging collection name first, so the OLD
+    #    (still-live) collection stays fully intact and queryable while the
+    #    new one is being written. Only after every batch succeeds do we
+    #    promote staging -> live and atomically swap in the BM25 file. This
+    #    is the fix for Issue #10: the two stores can never be observed in a
+    #    half-updated state relative to each other, and a crash mid-write
+    #    just leaves the old data as the live data (safe), never a mix.
+    staging_col_name = f"{col_name}__staging"
+
+    with _chroma_write_lock:
+        try:
+            chroma_client.delete_collection(name=staging_col_name)
+        except Exception:
+            pass  # no leftover staging collection from a previous failed run
+
+        collection = chroma_client.get_or_create_collection(name=staging_col_name)
+
+        try:
+            for i in range(0, len(ids), 5000):
+                collection.add(
+                    ids=ids[i:i + 5000],
+                    embeddings=embeddings[i:i + 5000],
+                    metadatas=metadatas[i:i + 5000],
+                    documents=chunks[i:i + 5000]
+                )
+        except Exception:
+            # Staging write failed partway through. Clean up the partial
+            # staging collection and the BM25 temp file; leave the OLD
+            # (still-live) collection and BM25 index completely untouched,
+            # then re-raise so the caller knows the crawl/index failed.
+            try:
+                chroma_client.delete_collection(name=staging_col_name)
+            except Exception:
+                pass
+            if os.path.exists(bm25_tmp_path):
+                os.remove(bm25_tmp_path)
+            raise
+
+        # Staging is fully populated. Promote it to the live name. Newer
+        # chromadb versions support renaming in place via modify(); older
+        # ones don't, so fall back to copying staging's contents into a
+        # freshly (re)created live collection.
+        try:
+            collection.modify(name=col_name)
+        except Exception:
+            try:
+                chroma_client.delete_collection(name=col_name)
+            except Exception:
+                pass
+            final_collection = chroma_client.get_or_create_collection(name=col_name)
+            all_data = collection.get(include=["embeddings", "metadatas", "documents"])
+            if all_data.get("ids"):
+                final_collection.add(
+                    ids=all_data["ids"],
+                    embeddings=all_data["embeddings"],
+                    metadatas=all_data["metadatas"],
+                    documents=all_data["documents"],
+                )
+            try:
+                chroma_client.delete_collection(name=staging_col_name)
+            except Exception:
+                pass
+
+        # Chroma is now live under col_name. Atomically swap the BM25 file
+        # in as the very last step — os.replace is atomic on POSIX and
+        # Windows, so bm25_path is never observably half-written.
+        os.replace(bm25_tmp_path, bm25_path)
+
+        # Drop any process-level BM25 cache entry so the next query reloads
+        # the freshly-swapped file instead of serving a stale in-memory copy
+        # (see retriever.py's python_bm25_cache).
+        try:
+            from retriever import python_bm25_cache
+            python_bm25_cache.pop(col_name, None)
+        except Exception:
+            pass
+
+    # 5. Version caching — written last, acts as the "commit succeeded"
+    #    signal for check_cache(). If anything above raised, execution never
+    #    reaches here, so a stale manifest can never point at a broken or
+    #    partially-written index.
     manifest = {
         "url": url,
         "crawl_date": datetime.now().isoformat(),
