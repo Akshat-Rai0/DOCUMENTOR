@@ -25,6 +25,7 @@
 - [Running the Application](#running-the-application)
 - [API Reference](#api-reference)
 - [How It Works](#how-it-works)
+- [Evaluation](#evaluation)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
@@ -35,7 +36,7 @@
 
 DocuMentor solves a real problem for developers learning new libraries: official documentation is written for experienced users, organized by API reference rather than use case, and requires you to already know what you're looking for.
 
-Paste any documentation URL. DocuMentor crawls the entire site, parses and indexes every function into a structured knowledge base, and lets you ask questions in plain English. The system classifies your intent (function search, error fix, or concept explanation), retrieves the most relevant documentation chunks using hybrid BM25 + semantic search, reranks them with a cross-encoder, and generates a grounded answer using a local LLM — with source citations and zero hallucination of function names.
+Paste a documentation URL. DocuMentor crawls the site within its configured page limit, parses and indexes documentation into a structured knowledge base, and lets you ask questions in plain English. The system classifies your intent (function search, error fix, or concept explanation), retrieves the most relevant documentation chunks using hybrid BM25 + semantic search, reranks them with a cross-encoder, and generates a grounded answer using a local LLM with source citations.
 
 **Target users:** Computer science students, bootcamp learners, self-taught developers, and anyone onboarding to an unfamiliar library.
 
@@ -49,8 +50,9 @@ Paste any documentation URL. DocuMentor crawls the entire site, parses and index
   - **Anti-pattern detection** — every answer includes a structured "avoid when" section
   - **Error fix mode** — paste a traceback, get root cause + fix + working code
 - **Hybrid retrieval pipeline** — BM25 keyword search + dense embeddings merged via Reciprocal Rank Fusion (RRF), followed by a cross-encoder reranker
-- **Hallucination-proof by design** — the LLM is strictly grounded to retrieved documentation chunks only
-- **Version caching** — already-indexed libraries are served from cache for 7 days; no redundant re-crawling
+- **Grounded generation** — the LLM is prompted with retrieved documentation chunks and its structured response is validated
+- **Version caching** — a cache manifest is valid for 7 days; otherwise the library can be crawled again
+- **Bounded crawling** — the crawler processes at most 80 pages per library
 - **Fully local LLM** — runs on your machine via Ollama with no API costs
 - **Real-time indexing progress** — frontend polls and displays crawl → parse → index stages with a progress bar
 
@@ -58,15 +60,11 @@ Paste any documentation URL. DocuMentor crawls the entire site, parses and index
 
 ## Architecture
 
-The system follows a 7-stage pipeline from URL to answer:
-URL Input
-→ Scrape (httpx + BeautifulSoup / Cloudflare Browser Rendering)
-→ Clean + Structure (strip noise, extract function boundaries)
-→ Chunk (by function boundary, not token count)
-→ Embed (sentence-transformers all-MiniLM-L6-v2 → ChromaDB)
-→ Hybrid Retrieval (BM25 + semantic search → RRF merge)
-→ Rerank (cross-encoder/ms-marco-MiniLM-L-6-v2)
-→ LLM Answer (Ollama qwen2.5-coder:7b, strict JSON output)
+The system has separate ingestion and query flows.
+
+**Ingestion:** URL input → cache check → crawl (capped at 80 pages per library) → clean → extract → map to the Pydantic schema → chunk into 512-word sliding windows with 128-word overlap → embed into ChromaDB → build a BM25 index → store the indexed data.
+
+**Query:** intent classification → optional query expansion → parallel BM25 and dense retrieval → Reciprocal Rank Fusion (RRF, `k=60`) → cross-encoder reranking → grounded generation with Ollama JSON mode and Pydantic validation.
 
 Each scraped function is stored as a typed JSON object:
 ```json
@@ -98,7 +96,7 @@ Each scraped function is stored as a typed JSON object:
 | Vector store | ChromaDB (persistent, local) |
 | Keyword search | rank-bm25 |
 | Reranker | sentence-transformers `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| Local LLM | Ollama (`qwen2.5-coder:7b`) |
+| Local LLM | Ollama (default: `gemma4`; override with `OLLAMA_MODEL`) |
 | Frontend | React 18 + TypeScript + Vite |
 | Styling | Tailwind CSS + shadcn/ui |
 | Data validation | Pydantic v2 |
@@ -157,7 +155,7 @@ Ensure the following are installed before proceeding:
 
 Pull the LLM model before starting:
 ```bash
-ollama pull qwen2.5-coder:7b
+ollama pull gemma4
 ```
 
 ---
@@ -195,7 +193,8 @@ npm install
 ### Backend — `BACKEND/.env`
 ```env
 # Ollama (local LLM)
-OLLAMA_MODEL=qwen2.5-coder:7b
+# Optional; defaults to gemma4
+OLLAMA_MODEL=gemma4
 OLLAMA_URL=http://localhost:11434/api/generate
 
 # Cloudflare Browser Rendering (optional — only needed for JS-heavy doc sites)
@@ -355,7 +354,20 @@ The LLM receives only the retrieved documentation chunks — no general knowledg
 
 > *"Answer ONLY using the provided documentation chunks. If the answer is not in the chunks, say so. Do not use general knowledge."*
 
-The model is instructed to return a fixed JSON schema, ensuring the frontend always receives structured, renderable output.
+The model is instructed to return JSON using Ollama's JSON mode. The response is then validated and normalized with Pydantic; this is not schema-grammar-constrained decoding.
+
+---
+
+## Evaluation
+
+The 15-query evaluation harness runs the retrieval pipeline against the queries in `BACKEND/eval_dataset.py`:
+
+```bash
+cd BACKEND
+python eval_harness.py
+```
+
+It reports standard information-retrieval metrics including Precision@k, Recall@k, Mean Reciprocal Rank (MRR), and Mean Average Precision (MAP). Evaluation results are not committed to the repository yet.
 
 ---
 
